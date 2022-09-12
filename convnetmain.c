@@ -46,6 +46,28 @@ void opencl_init() {
 #define MALLOCS(TYPE,NUM) ((TYPE*)malloc(sizeof(TYPE)*(NUM)))
 
 // does it work?
+
+cl_program cl_load_program(const char* prgname) {
+	FILE* fp = fopen(prgname,"rb");
+	if (!fp) {
+		printf("can't load %s\n",prgname);
+		exit(0);
+	}
+	cl_int ret=0;
+	size_t srclen=0;
+	fseek(fp,0,SEEK_END); srclen=ftell(fp); fseek(fp,0,SEEK_SET);
+	const char* kernel_src = (const char*) malloc(srclen);
+	
+	fread(kernel_src,1,srclen,fp);
+	fclose(fp);
+	printf(kernel_src);
+
+	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&srclen, &ret);
+	CL_VERIFY(ret);
+	return prg;
+	
+}
+
 void opencl_test() {
 	cl_int ret;
 	int testsize=64;
@@ -69,15 +91,7 @@ void opencl_test() {
 	size_t srclen=0;
 	printf("create program\n");
 
-	FILE* fp = fopen("kernel.cl","rb");
-	fseek(fp,0,SEEK_END); srclen=ftell(fp); fseek(fp,0,SEEK_SET);
-	const char* kernel_src = (const char*) malloc(srclen);
-	fread(kernel_src,1,srclen,fp);
-	fclose(fp);
-	printf(kernel_src);
-
-	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&srclen, &ret);
-	CL_VERIFY(ret);
+	cl_program prg= cl_load_program("kernel.cl");
 
 
 
@@ -90,9 +104,9 @@ void opencl_test() {
 	cl_kernel kernel= clCreateKernel(prg, "vector_add", &ret);	
 	CL_VERIFY(ret);
 	printf("set kernel args\n");
-	ret=clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a);
-	ret=clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b);
-	ret=clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c);
+	ret=clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a); CL_VERIFY(ret);
+	ret=clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b); CL_VERIFY(ret);
+	ret=clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c); CL_VERIFY(ret);
 
 	size_t global_item_size = testsize;
 	size_t local_item_size = 64;
