@@ -6,56 +6,52 @@
 #include "SDL_image.h"
 
 
-const char* g_kernel="	\n\
-__kernel void vector_add(__global const int *A, __global const int *B, __global int *C) {	\n\
- 									\n\
-    // Get the index of the current element to be processed		\n\
-    int i = get_global_id(0);						\n\
- 									\n\
-    // Do the operation							\n\
-    C[i] = A[i] + B[i];							\n\
-}									\n\
-\0";
-
 cl_device_id g_cl_device=0;
-cl_context gcl;
-cl_command_queue gclq;
+cl_context gcl=0;
+cl_command_queue gclq=0;
+
+void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
+	if (errcode!=0) {
+		printf("%s:%d\nopencl error %x\n%s\n",srcfile,line,errcode,msg?msg:"");
+	}
+}
+#define CL_VERIFY(ERR) cl_verify(ERR, __FILE__, __LINE__, (const char*)0);
 
 void opencl_init() {
-    cl_uint num_devices, i;
-    clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
+	cl_uint num_devices, i;
+	clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
 
-    cl_device_id* devices = calloc(sizeof(cl_device_id), num_devices);
-    clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, num_devices, devices, NULL);
+	cl_device_id* devices = calloc(sizeof(cl_device_id), num_devices);
+	clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, num_devices, devices, NULL);
 
-    char buf[128];
-    for (i = 0; i < num_devices; i++) {
-        clGetDeviceInfo(devices[i], CL_DEVICE_NAME, 128, buf, NULL);
-        fprintf(stdout, "Device %s supports ", buf);
+	char buf[128];
+	for (i = 0; i < num_devices; i++) {
+		clGetDeviceInfo(devices[i], CL_DEVICE_NAME, 128, buf, NULL);
+		fprintf(stdout, "Device %s supports ", buf);
 
-        clGetDeviceInfo(devices[i], CL_DEVICE_VERSION, 128, buf, NULL);
-	// just use the last we find?
-	g_cl_device = devices[i];
-        fprintf(stdout, "%s\n", buf);
-    }
+		clGetDeviceInfo(devices[i], CL_DEVICE_VERSION, 128, buf, NULL);
+		// just use the last we find?
+		g_cl_device = devices[i];
+		fprintf(stdout, "%s\n", buf);
+	}
 
-    free(devices);
+	free(devices);
 
-	cl_int ret;
-	gcl = clCreateContext(NULL,1,&g_cl_device, NULL, NULL, &ret);
-	gclq = clCreateCommandQueue(gcl,g_cl_device,0,&ret);
+	cl_int ret=0;
+	gcl = clCreateContext(NULL,1,&g_cl_device, NULL, NULL, &ret); CL_VERIFY(ret);
+	gclq = clCreateCommandQueue(gcl,g_cl_device,0,&ret); CL_VERIFY(ret);
 
 }
 
 #define MALLOCS(TYPE,NUM) ((TYPE*)malloc(sizeof(TYPE)*(NUM)))
 
 // does it work?
-void test_opencl() {
+void opencl_test() {
 	cl_int ret;
 	int testsize=64;
-	cl_mem array_a =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret);
-	cl_mem array_b =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret);
-	cl_mem array_c =  clCreateBuffer(gcl,CL_MEM_WRITE_ONLY, testsize*sizeof(int), NULL, &ret);
+	cl_mem buffer_a =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
+	cl_mem buffer_b =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
+	cl_mem buffer_c =  clCreateBuffer(gcl,CL_MEM_WRITE_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
 
 	int* data_a=MALLOCS(int, testsize);
 	int* data_b=MALLOCS(int, testsize);
@@ -67,31 +63,43 @@ void test_opencl() {
 		data_c[i]=0;
 	}
 	
-	ret=clEnqueueWriteBuffer(gclq, array_a, CL_TRUE,0, testsize*sizeof(int), data_a, 0, NULL,NULL);
-	ret=clEnqueueWriteBuffer(gclq, array_b, CL_TRUE,0, testsize*sizeof(int), data_b, 0, NULL,NULL);
+	ret=clEnqueueWriteBuffer(gclq, buffer_a, CL_TRUE,0, testsize*sizeof(int), data_a, 0, NULL,NULL);
+	ret=clEnqueueWriteBuffer(gclq, buffer_b, CL_TRUE,0, testsize*sizeof(int), data_b, 0, NULL,NULL);
 
-	size_t srclen=strlen(&g_kernel);
+	size_t srclen=0;
 	printf("create program\n");
-	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &g_kernel,(const size_t*)&srclen, &ret);
+
+	FILE* fp = fopen("kernel.cl","rb");
+	fseek(fp,0,SEEK_END); srclen=ftell(fp); fseek(fp,0,SEEK_SET);
+	const char* kernel_src = (const char*) malloc(srclen);
+	fread(kernel_src,1,srclen,fp);
+	fclose(fp);
+	printf(kernel_src);
+
+	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&srclen, &ret);
+	CL_VERIFY(ret);
+
+
+
+
 	printf("build program\n");
 	ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
-	
-	printf("compiled cl program %x\n",ret);
+	CL_VERIFY(ret);
 
 
-	cl_kernel kernel= clCreateKernel(prg, "vector add", &ret);	
-	printf("created kernel %x %x",kernel,ret);
+	cl_kernel kernel= clCreateKernel(prg, "vector_add", &ret);	
+	CL_VERIFY(ret);
 	printf("set kernel args\n");
-	ret=clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&array_a);
-	ret=clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&array_b);
-	ret=clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&array_c);
+	ret=clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a);
+	ret=clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b);
+	ret=clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c);
 
 	size_t global_item_size = testsize;
 	size_t local_item_size = 64;
 	printf("trigger kernel\n");
 	ret=clEnqueueNDRangeKernel(gclq, kernel, 1, NULL, &global_item_size,&local_item_size, 0, NULL,NULL);
 	printf("finished dispatch..");
-	clEnqueueReadBuffer(gclq, array_c, CL_TRUE, 0, sizeof(int)*testsize, data_c, 0, NULL,NULL);
+	clEnqueueReadBuffer(gclq, buffer_c, CL_TRUE, 0, sizeof(int)*testsize, data_c, 0, NULL,NULL);
 	printf("finished read\n");
 	clFlush(gclq);
 	clFinish(gclq);
@@ -103,9 +111,9 @@ void test_opencl() {
 	printf("finish..\n");
 	clReleaseKernel(kernel);
 	clReleaseProgram(prg); 
-	clReleaseMemObject(array_a);
-	clReleaseMemObject(array_b);
-	clReleaseMemObject(array_c);
+	clReleaseMemObject(buffer_a);
+	clReleaseMemObject(buffer_b);
+	clReleaseMemObject(buffer_c);
 	free(data_a);
 	free(data_b);
 	free(data_c);
@@ -119,7 +127,7 @@ void opencl_shutdown() {
 int SCREEN_HEIGHT = 800;
 int SCREEN_WIDTH = 600;
 int main() {
-	printf(g_kernel);
+
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_Window *window = SDL_CreateWindow("SDL Game", 0, 0, 
 	SCREEN_HEIGHT, SCREEN_WIDTH, SDL_WINDOW_HIDDEN);
@@ -127,7 +135,7 @@ int main() {
 	SDL_Event event;
 
 	opencl_init();
-	test_opencl();
+	opencl_test();
 	opencl_shutdown();
 
 	int running = 1;
