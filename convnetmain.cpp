@@ -139,25 +139,25 @@ struct Buffer {
     Int4 shape;
     T* data=nullptr;
     cl_mem device_buffer=0;
-    Buffer(Int4 shape, const T* src=nullptr, cl_int mode=CL_MEM_READ_ONLY) {
+    
+    Buffer(Int4 shape, std::function<T(int)> generate=[](int i){return T();}, cl_int mode=CL_MEM_READ_ONLY) {
         this->shape=shape;
         std::cout<<"creating buffer: ["<<this->shape<<"\n";
         
         this->data = new T[shape.hmul()];
         cl_int ret;
-        
         this->device_buffer =clCreateBuffer(gcl, mode, sizeof(T)*this->total_size() , NULL, &ret); CL_VERIFY(ret);
-        if (src!=nullptr){
-            for (int i=0; i<this->total_size(); i++) {
-                this->data[i] = src[i];
-            }
+        for (int i=0; i<this->total_size(); i++) {
+            this->data[i] = generate(i);
         }
-        if (src) {
+        if (mode!=CL_MEM_WRITE_ONLY){
             this->to_device();
         }
-
     }
-    Buffer(Buffer&& src) {
+    Buffer(Int4 shape, const T* src, cl_int mode=CL_MEM_READ_ONLY) : Buffer(shape, [&](int i){return src[i];},mode){
+        
+    }
+    Buffer(Buffer<T>&& src) {
         this->shape =src.shape;
         src.shape=Int4();
         this->data=src.data;
@@ -171,7 +171,7 @@ struct Buffer {
             clReleaseMemObject(this->device_buffer);
         }
     }
-    void set_arg_of(cl_kernel kernel, int arg_index) {
+    void set_arg_of(cl_kernel kernel, int arg_index) const {
         auto ret=clSetKernelArg(kernel, arg_index, sizeof(cl_mem), (void*)&this->device_buffer); CL_VERIFY(ret);
     }
     
@@ -239,6 +239,7 @@ struct Kernel {
         ret=clGetKernelInfo(this->kernel,CL_KERNEL_NUM_ARGS,sizeof(this->num_args),(void*)&this->num_args,&sz);
         
     }
+
     Kernel(const Kernel&) = delete;
     Kernel(Kernel&& src){this->kernel  =src.kernel;src.kernel=0;}
     ~Kernel(){
@@ -260,71 +261,69 @@ struct Kernel {
         auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 2, NULL, &globalsize[0],&localsize[0], 0, NULL,NULL); CL_VERIFY(ret);
     }
 
+    // setting a buffer is specialization.. ths looks horrid after rust.
+    template<>
     template<typename T>
-    void set_arg_buffer(int arg_index, Buffer<T>& x){
+    void set_arg(int arg_index, Buffer<T>& x){
         x.set_arg_of(this->kernel, arg_index);
         assert(arg_index<this->num_args);
         this->arg_set|=1<<arg_index;
     }
     template<typename T>
-    void set_arg_val(int arg_index, const T& val){  
+    void set_arg(int arg_index, const T& val){  
         assert(arg_index<this->num_args);
         auto ret=clSetKernelArg(this->kernel, arg_index, (size_t) sizeof(T), (const void*)&val); CL_VERIFY(ret);
         this->arg_set|=1<<arg_index;
     }
+
+    template<typename A,typename B>
+    void set_args(Buffer<A>& a, Buffer<B>& b){
+        this->set_arg(0,a);this->set_arg(1,b);
+    }
+    template<typename A,typename B,typename C>
+    void set_args(Buffer<A>& a, Buffer<B>& b, Buffer<C>& c){
+        this->set_arg(0,a);this->set_arg(1,b);this->set_arg(2,c);
+    }
+    // todo -figure out variadic template mixing Buffer<X>& and const Y&
+    template<typename A,typename B,typename C,typename... D>
+    void set_args(Buffer<A>& a, Buffer<B>& b, Buffer<C>& c,D... rest){
+        this->set_arg(0,a);this->set_arg(1,b);this->set_arg(2,c);
+        this->set_args_at(3,rest...);
+    }
+    template<typename X>
+    void set_args_at(int index,const X& x){
+        this->set_arg(index,x);
+    }
+    template<typename X,typename... Rest>
+    void set_args_at(int index,const X& x,Rest... rest){
+        this->set_arg(index,x);
+        this->set_args_at(index+1,rest...);
+    }
+
+
 };
 
 void opencl_test_conv() {
 	cl_int ret;
 	int testsize=64;
     auto size=Int4(testsize,1,1,1);
-    auto buffer_a = Buffer(size);
-    auto buffer_b = Buffer(size); 
-    auto buffer_c = Buffer(size, (float*)nullptr, CL_MEM_READ_WRITE);
-    
-	for (int i=0; i<testsize; i++) {
-		buffer_a[i]=(float)testsize-i;
-		buffer_b[i]=(float)i;
-		buffer_c[i]=0.0f;
-	}
-    buffer_a.to_device();
-    buffer_b.to_device();
-    
+    auto buffer_a = Buffer<float>(size,[&](auto i){return (float)i;});
+    auto buffer_b = Buffer<float>(size,[&](auto i){return (float)(testsize-i);}); 
+    auto buffer_c = Buffer<float>(size,[&](auto i){return 0.0f;}, CL_MEM_READ_WRITE);
 	
     Program prg("kernel.cl");
 	auto kernel=Kernel(prg,"vector_add_scaled");
-	 
-	printf("set kernel args\n");
+    kernel.set_args(buffer_a,buffer_b,buffer_c, 1000.0f, 1.0f);
 
-    kernel.set_arg_buffer(0,buffer_a);
-    kernel.set_arg_buffer(1,buffer_b);
-    kernel.set_arg_buffer(2,buffer_c);
-    kernel.set_arg_val(3,1.0f);
-    kernel.set_arg_val(4,1000.0f);
-
-	size_t global_item_size = testsize;
-	size_t local_item_size = 64;
-	printf("trigger kernel\n");
     kernel.enqueue_range(testsize,64);
-    //ret=clEnqueueNDRangeKernel(gclq, kernel.kernel, 1, NULL, &global_item_size,&local_item_size, 0, NULL,NULL);
 	
-	printf("finished dispatch..");
-	//clEnqueueReadBuffer(gclq, buffer_c, CL_TRUE, 0, sizeof(float)*testsize, &data_c[0], 0, NULL,NULL);
     buffer_c.from_device();
 
-	printf("finished read\n");
 	clFlush(gclq);
 	clFinish(gclq);
 
 	printf("values back from opencl device kernel invocation?:-\n");
-    std::cout<< buffer_c;
-/*	for (int i=0; i<testsize; i++) {
-		printf("[%d/%d] %.3f+ %.3f = %.3f\n", i,testsize, buffer_a[i],buffer_b[i],buffer_c[i]);
-	}
-*/
-	printf("finish..\n");
-	
-	
+    std::cout<< buffer_c;	
 }
 
 void opencl_shutdown() {
