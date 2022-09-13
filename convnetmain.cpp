@@ -178,7 +178,15 @@ struct Buffer {
 struct Kernel {
     cl_kernel kernel;
     Kernel(cl_program prg, const char* entry) {
-
+        cl_int ret;
+        this->kernel = clCreateKernel(prg, entry, &ret);	CL_VERIFY(ret);
+    }
+    Kernel(kernel) = delete;
+    Kernel(Kernel&& src){this->kernel  =src.kernel;src.kernel=0;}
+    ~Kernel(){
+        if (this->kernel){
+            clReleaseKernel(this->kernel);
+        }
     }
 };
 
@@ -202,8 +210,8 @@ void opencl_test_conv() {
 	//ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
 	//CL_VERIFY(ret);
 
-	cl_kernel kernel= clCreateKernel(prg, "vector_add", &ret);	
-	CL_VERIFY(ret);
+	auto kernel=Kernel(prg,"vector_add");
+	 
 	printf("set kernel args\n");
 
     buffer_a.set_arg_of(kernel,0);
@@ -227,7 +235,7 @@ void opencl_test_conv() {
 		printf("[%d/%d] %.3f+ %.3f = %.3f\n", i,testsize, buffer_a[i],buffer_b[i],buffer_c[i]);
 	}
 	printf("finish..\n");
-	clReleaseKernel(kernel);
+	
 	clReleaseProgram(prg); 
 }
 
