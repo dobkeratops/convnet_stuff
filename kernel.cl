@@ -38,7 +38,7 @@ void set3df(__global float* dst, int4 dstshape, int x, int y, int z, float value
 // todo .. bias & custom saturation.
 // todo - interleaving 'z' probably better (width,height,channels vs ..)
 
-__kernel void conv2d(
+__kernel void conv2d_planar(
         __global const float* src,  // 3d array width,height,srcchannels
         __global const float* filter, // 4D array, width,height,srcchannels,dstchannels
         __global float* dst,                 // 3d array wdith,height, dstchannels

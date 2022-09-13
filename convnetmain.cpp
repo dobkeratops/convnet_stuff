@@ -116,18 +116,19 @@ cl_mem cl_create_and_load_buffer(size_t elem_size,int num_elems,void* src_data) 
 }
 
 // todo .. decide if we should just use std::array for this..
-struct Int2 {`
+struct Int2 {
     int x,y;Int2(){x=0;y=0;}Int2(int x,int y){this->x=x;this->y=y;}int hmul()const{return x*y;}
     template<typename T>
-    
     operator std::array<T,2>() const {return std::array<T,2>({(T)this->x,(T)this->y});}
 };
 struct Int3 {
     int x,y,z;Int3(){x=0;y=0,z=0;}Int3(int x,int y,int z){this->x=x;this->y=y;this->z=z;}int hmul()const{return x*y*z;}
+    template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
 };
 struct Int4 {
     int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
+    template<typename T>
     operator std::array<T,4>() const {return std::array<T,4>({(T)this->x,(T)this->y,(T)this->z,(T)this->w});}
 };
 
@@ -185,6 +186,32 @@ struct Buffer {
     const T& operator[](int i) const{return this->data[i];}
     T& operator[](int i){return this->data[i];}
 };
+
+template<typename F,typename T>
+F& operator<<(F& dst, const Buffer<T>& src) {
+    dst<<src.shape<<"\n";
+    int numy=src.shape.y*src.shape.z*src.shape.w;
+    // jst print as 2d, todo..
+    dst<<"[\n";
+    for (int j=0; j<numy; j++) {
+        if (src.shape.x<16) {
+            dst<<"\t\t[";
+            for (int i=0; i<src.shape.x; i++) {
+                dst <<src[i+j*src.shape.x] << "\t";
+            }
+            dst<<"]\n";
+        } else {
+            dst<<"\t[\n";
+            for (int i=0; i<src.shape.x; i++) {
+                dst <<"\t\t"<<src[i+j*src.shape.x] << "\n";
+            }
+            dst<<"\t]\n";
+        }
+    }
+    dst<<"]\n";
+    return dst;
+}
+
 struct Program {
     cl_program prog=0;
     Program(){this->prog=0;}
@@ -254,6 +281,7 @@ void opencl_test_conv() {
     auto buffer_a = Buffer(size);
     auto buffer_b = Buffer(size); 
     auto buffer_c = Buffer(size, (float*)nullptr, CL_MEM_READ_WRITE);
+    
 	for (int i=0; i<testsize; i++) {
 		buffer_a[i]=(float)testsize-i;
 		buffer_b[i]=(float)i;
@@ -287,11 +315,13 @@ void opencl_test_conv() {
 	printf("finished read\n");
 	clFlush(gclq);
 	clFinish(gclq);
-	
+
 	printf("values back from opencl device kernel invocation?:-\n");
-	for (int i=0; i<testsize; i++) {
+    std::cout<< buffer_c;
+/*	for (int i=0; i<testsize; i++) {
 		printf("[%d/%d] %.3f+ %.3f = %.3f\n", i,testsize, buffer_a[i],buffer_b[i],buffer_c[i]);
 	}
+*/
 	printf("finish..\n");
 	
 	
