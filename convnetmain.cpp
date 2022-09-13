@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
+#include <array>
+#include <iostream>
 #include <OpenCL/opencl.h>
 
 #include "SDL2/SDL.h"
@@ -9,6 +12,8 @@
 cl_device_id g_cl_device=0;
 cl_context gcl=0;
 cl_command_queue gclq=0;
+
+#define TRACE printf("%s:%d\n",__FILE__,__LINE__);
 
 void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 	if (errcode==0) {return;}
@@ -84,10 +89,17 @@ cl_program cl_load_program(const char* prgname) {
 
 	fread((void*) kernel_src,1,srclen,fp);
 	fclose(fp);
-	printf(kernel_src);
+	printf("%s",kernel_src);
 
+    
 	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&srclen, &ret);
+    
 	CL_VERIFY(ret);
+
+   	ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
+    
+    CL_VERIFY(ret);
+
 	return prg;
 }
 
@@ -98,75 +110,125 @@ cl_mem cl_create_and_load_buffer(size_t elem_size,int num_elems,void* src_data) 
 		ret = clEnqueueWriteBuffer(gclq, buffer, CL_TRUE, 0, elem_size*num_elems, src_data, 0, NULL,NULL);
 	}
 	CL_VERIFY(ret);
+    return buffer;
 }
 
 
+struct Int4 {
+    int x,y,z,w;
+    Int4(){x=0;y=0;z=0;w=0;}
+    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;}
+    int hmul()const{return x*y*z*w;}
+};
+template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
 
+template<typename T=float>
+struct Buffer {
+    Int4 shape;
+    T* data=nullptr;
+    cl_mem device_buffer=0;
+    Buffer(Int4 shape, const T* src=nullptr, cl_int mode=CL_MEM_READ_ONLY) {
+        this->shape=shape;
+        std::cout<<"creating buffer: ["<<this->shape<<"\n";
+        
+        this->data = new T[shape.hmul()];
+        cl_int ret;
+        
+        this->device_buffer =clCreateBuffer(gcl, mode, sizeof(T)*this->total_size() , NULL, &ret); CL_VERIFY(ret);
+        if (src!=nullptr){
+            for (int i=0; i<this->total_size(); i++) {
+                this->data[i] = src[i];
+            }
+        }
+        if (src) {
+            this->to_device();
+        }
 
-void opencl_test_vec_add() {
+    }
+    Buffer(Buffer&& src) {
+        this->shape =src.shape;
+        src.shape=Int4();
+        this->data=src.data;
+        src.data=nullptr;
+        this->device_buffer = src.device_buffer;
+        src.device_buffer=0;
+    }
+    ~Buffer() {
+        if (this->data){delete[] this->data;}
+        if (this->device_buffer) {
+            clReleaseMemObject(this->device_buffer);
+        }
+    }
+    void set_arg_of(cl_kernel kernel, int arg_index) {
+        auto ret=clSetKernelArg(kernel, arg_index, sizeof(cl_mem), (void*)&this->device_buffer); CL_VERIFY(ret);
+    }
+    
+    int total_size() const{return shape.hmul();}
+    void to_device() {
+        auto ret=clEnqueueWriteBuffer(gclq, this->device_buffer, CL_TRUE,0, this->total_size()*sizeof(T), (void*) this->data, 0, NULL,NULL); CL_VERIFY(ret);
+    }
+    void from_device() {
+        auto ret=clEnqueueReadBuffer(gclq, this->device_buffer, CL_TRUE, 0, sizeof(T)*this->total_size(), this->data, 0, NULL,NULL);
+        CL_VERIFY(ret);
+    }
+    const T& operator[](int i) const{return this->data[i];}
+    T& operator[](int i){return this->data[i];}
+};
+
+struct Kernel {
+    cl_kernel kernel;
+    Kernel(cl_program prg, const char* entry) {
+
+    }
+};
+
+void opencl_test_conv() {
 	cl_int ret;
 	int testsize=64;
-	cl_mem buffer_a =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
-	cl_mem buffer_b =  clCreateBuffer(gcl,CL_MEM_READ_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
-	cl_mem buffer_c =  clCreateBuffer(gcl,CL_MEM_WRITE_ONLY, testsize*sizeof(int), NULL, &ret); CL_VERIFY(ret);
-
-
-	float* data_a=MALLOCS(float, testsize);
-	float* data_b=MALLOCS(float, testsize);
-	float* data_c=MALLOCS(float, testsize);
-	int i;
-	for (i=0; i<testsize; i++) {
-		data_a[i]=(float)i;
-		data_b[i]=(float)i*10000.0f;
-		data_c[i]=0.0f;
+    auto size=Int4(testsize,1,1,1);
+    auto buffer_a = Buffer(size);
+    auto buffer_b = Buffer(size); 
+    auto buffer_c = Buffer(size, (float*)nullptr, CL_MEM_READ_WRITE);
+	for (int i=0; i<testsize; i++) {
+		buffer_a[i]=(float)i+(float)i*100.0;
+		buffer_b[i]=(float)i*10000.0f;
+		buffer_c[i]=0.0f;
 	}
-	
-	ret=clEnqueueWriteBuffer(gclq, buffer_a, CL_TRUE,0, testsize*sizeof(float), data_a, 0, NULL,NULL);
-	ret=clEnqueueWriteBuffer(gclq, buffer_b, CL_TRUE,0, testsize*sizeof(float), data_b, 0, NULL,NULL);
-
-	size_t srclen=0;
-	printf("create program\n");
-
+    buffer_a.to_device();
+    buffer_b.to_device();
+    
 	cl_program prg= cl_load_program("kernel.cl");
-
-	printf("build program\n");
-	ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
-	CL_VERIFY(ret);
-
+	//printf("build program\n");
+	//ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
+	//CL_VERIFY(ret);
 
 	cl_kernel kernel= clCreateKernel(prg, "vector_add", &ret);	
 	CL_VERIFY(ret);
 	printf("set kernel args\n");
-	int size[4]={1,2,3,4};
-	ret=clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a); CL_VERIFY(ret);
-	ret=clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b); CL_VERIFY(ret);
-	ret=clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c); CL_VERIFY(ret);
-	//ret=clSetKernelArg(kernel, 3, sizeof(size), (void*)&size[0]); CL_VERIFY(ret);
+
+    buffer_a.set_arg_of(kernel,0);
+    buffer_b.set_arg_of(kernel,1);
+    buffer_c.set_arg_of(kernel,2);
 
 	size_t global_item_size = testsize;
 	size_t local_item_size = 64;
 	printf("trigger kernel\n");
 	ret=clEnqueueNDRangeKernel(gclq, kernel, 1, NULL, &global_item_size,&local_item_size, 0, NULL,NULL);
 	printf("finished dispatch..");
-	clEnqueueReadBuffer(gclq, buffer_c, CL_TRUE, 0, sizeof(float)*testsize, data_c, 0, NULL,NULL);
+	//clEnqueueReadBuffer(gclq, buffer_c, CL_TRUE, 0, sizeof(float)*testsize, &data_c[0], 0, NULL,NULL);
+    buffer_c.from_device();
 
 	printf("finished read\n");
 	clFlush(gclq);
 	clFinish(gclq);
 	
 	printf("values back from opencl device kernel invocation?:-\n");
-	for (i=0; i<testsize; i++) {
-		printf("[%d/%d] %.3f+ %.3f = %.3f\n", i,testsize, data_a[i],data_b[i],data_c[i]);
+	for (int i=0; i<testsize; i++) {
+		printf("[%d/%d] %.3f+ %.3f = %.3f\n", i,testsize, buffer_a[i],buffer_b[i],buffer_c[i]);
 	}
 	printf("finish..\n");
 	clReleaseKernel(kernel);
 	clReleaseProgram(prg); 
-	clReleaseMemObject(buffer_a);
-	clReleaseMemObject(buffer_b);
-	clReleaseMemObject(buffer_c);
-	free(data_a);
-	free(data_b);
-	free(data_c);
 }
 
 void opencl_shutdown() {
@@ -186,7 +248,7 @@ int main() {
 	SDL_Event event;
 
 	opencl_init();
-	opencl_test_vec_add();
+	opencl_test_conv();
 	opencl_shutdown();
 
 	int running = 1;
