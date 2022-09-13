@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <vector>
 #include <array>
 #include <iostream>
@@ -37,6 +38,7 @@ void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 		ERRCODE(CL_INVALID_VALUE)
 		ERRCODE(CL_INVALID_HOST_PTR)
 		ERRCODE(CL_INVALID_OPERATION)
+        ERRCODE(CL_INVALID_ARG_SIZE)
 		ERRCODE(CL_MEM_COPY_OVERLAP)
 		ERRCODE(CL_INVALID_MEM_OBJECT)
 	
@@ -113,13 +115,22 @@ cl_mem cl_create_and_load_buffer(size_t elem_size,int num_elems,void* src_data) 
     return buffer;
 }
 
-
-struct Int4 {
-    int x,y,z,w;
-    Int4(){x=0;y=0;z=0;w=0;}
-    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;}
-    int hmul()const{return x*y*z*w;}
+// todo .. decide if we should just use std::array for this..
+struct Int2 {`
+    int x,y;Int2(){x=0;y=0;}Int2(int x,int y){this->x=x;this->y=y;}int hmul()const{return x*y;}
+    template<typename T>
+    
+    operator std::array<T,2>() const {return std::array<T,2>({(T)this->x,(T)this->y});}
 };
+struct Int3 {
+    int x,y,z;Int3(){x=0;y=0,z=0;}Int3(int x,int y,int z){this->x=x;this->y=y;this->z=z;}int hmul()const{return x*y*z;}
+    operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
+};
+struct Int4 {
+    int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
+    operator std::array<T,4>() const {return std::array<T,4>({(T)this->x,(T)this->y,(T)this->z,(T)this->w});}
+};
+
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
 
 template<typename T=float>
@@ -174,19 +185,65 @@ struct Buffer {
     const T& operator[](int i) const{return this->data[i];}
     T& operator[](int i){return this->data[i];}
 };
+struct Program {
+    cl_program prog=0;
+    Program(){this->prog=0;}
+    Program(const char* filename){
+        this->prog= cl_load_program(filename);
+    }
+    Program(Program&& src){this->prog=src.prog;src.prog=0;}
+    ~Program(){
+        if (this->prog){
+            clReleaseProgram(this->prog); 
+            this->prog=0;
+        }
+    }
+};
 
 struct Kernel {
     cl_kernel kernel;
-    Kernel(cl_program prg, const char* entry) {
+    cl_int num_args=0;
+    cl_int arg_set=0;
+    Kernel(const Program& prg, const char* entry) {
+        assert(prg.prog);
         cl_int ret;
-        this->kernel = clCreateKernel(prg, entry, &ret);	CL_VERIFY(ret);
+        this->kernel = clCreateKernel(prg.prog, entry, &ret);	CL_VERIFY(ret);
+        size_t sz;
+        ret=clGetKernelInfo(this->kernel,CL_KERNEL_NUM_ARGS,sizeof(this->num_args),(void*)&this->num_args,&sz);
+        
     }
-    Kernel(kernel) = delete;
+    Kernel(const Kernel&) = delete;
     Kernel(Kernel&& src){this->kernel  =src.kernel;src.kernel=0;}
     ~Kernel(){
         if (this->kernel){
             clReleaseKernel(this->kernel);
         }
+    }
+    void verify_args()const{
+        assert(this->arg_set == (1<<this->num_args)-1);
+    }
+    void enqueue_range(size_t globalsize,size_t localsize) {
+        verify_args();
+        auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 1, NULL, &globalsize,&localsize, 0, NULL,NULL); CL_VERIFY(ret);
+    }
+    void enqueue_range_2d(Int2 _globalsize,Int2 _localsize) {
+        auto globalsize=(std::array<size_t,2>)_globalsize;
+        auto localsize=(std::array<size_t,2>)_localsize;
+        verify_args();
+        auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 2, NULL, &globalsize[0],&localsize[0], 0, NULL,NULL); CL_VERIFY(ret);
+    }
+
+    template<typename T>
+    void set_arg_buffer(int arg_index, Buffer<T>& x){
+        x.set_arg_of(this->kernel, arg_index);
+        assert(arg_index<this->num_args);
+        this->arg_set|=1<<arg_index;
+    }
+    template<typename T>
+    void set_arg_val(int arg_index, const T& val){  
+        assert(arg_index<this->num_args);
+        auto ret=clSetKernelArg(this->kernel, arg_index, (size_t) sizeof(T), (const void*)&val); CL_VERIFY(ret);
+        this->arg_set|=1<<arg_index;
     }
 };
 
@@ -198,30 +255,31 @@ void opencl_test_conv() {
     auto buffer_b = Buffer(size); 
     auto buffer_c = Buffer(size, (float*)nullptr, CL_MEM_READ_WRITE);
 	for (int i=0; i<testsize; i++) {
-		buffer_a[i]=(float)i+(float)i*100.0;
-		buffer_b[i]=(float)i*10000.0f;
+		buffer_a[i]=(float)testsize-i;
+		buffer_b[i]=(float)i;
 		buffer_c[i]=0.0f;
 	}
     buffer_a.to_device();
     buffer_b.to_device();
     
-	cl_program prg= cl_load_program("kernel.cl");
-	//printf("build program\n");
-	//ret= clBuildProgram(prg, 1, &g_cl_device, NULL,NULL,NULL);
-	//CL_VERIFY(ret);
-
-	auto kernel=Kernel(prg,"vector_add");
+	
+    Program prg("kernel.cl");
+	auto kernel=Kernel(prg,"vector_add_scaled");
 	 
 	printf("set kernel args\n");
 
-    buffer_a.set_arg_of(kernel,0);
-    buffer_b.set_arg_of(kernel,1);
-    buffer_c.set_arg_of(kernel,2);
+    kernel.set_arg_buffer(0,buffer_a);
+    kernel.set_arg_buffer(1,buffer_b);
+    kernel.set_arg_buffer(2,buffer_c);
+    kernel.set_arg_val(3,1.0f);
+    kernel.set_arg_val(4,1000.0f);
 
 	size_t global_item_size = testsize;
 	size_t local_item_size = 64;
 	printf("trigger kernel\n");
-	ret=clEnqueueNDRangeKernel(gclq, kernel, 1, NULL, &global_item_size,&local_item_size, 0, NULL,NULL);
+    kernel.enqueue_range(testsize,64);
+    //ret=clEnqueueNDRangeKernel(gclq, kernel.kernel, 1, NULL, &global_item_size,&local_item_size, 0, NULL,NULL);
+	
 	printf("finished dispatch..");
 	//clEnqueueReadBuffer(gclq, buffer_c, CL_TRUE, 0, sizeof(float)*testsize, &data_c[0], 0, NULL,NULL);
     buffer_c.from_device();
@@ -236,7 +294,7 @@ void opencl_test_conv() {
 	}
 	printf("finish..\n");
 	
-	clReleaseProgram(prg); 
+	
 }
 
 void opencl_shutdown() {

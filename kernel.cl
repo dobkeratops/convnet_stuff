@@ -2,6 +2,18 @@ __kernel void vector_add(__global const float *src0, __global const float *src1,
     int i = get_global_id(0);					
     dst[i] = src0[i]+ src1[i];
 }									
+__kernel void vector_add_scaled(__global const float *src0, __global const float *src1, __global float *dst, float f0, float f1) {
+    int i = get_global_id(0);					
+    dst[i] = src0[i]*f0 + src1[i]*f1;
+}
+/*
+__kernel void vector_clamp(__global const float *src0, __global float *dst, float fmin,float fmax) {
+    int i = get_global_id(0);
+    float f=src0[i];
+    if (f<fmin) f=fmin; else if (f>fmax) f=fmax;
+    dst[i] = f;
+}									
+*/
 __kernel void vector_mul(__global const float *src0, __global const float *src1, __global float *dst) {
     int i = get_global_id(0);
     dst[i] = src0[i]* src1[i];
