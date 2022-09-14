@@ -1,20 +1,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <sys/stat.h>
 #include <vector>
 #include <array>
 #include <iostream>
+#include <memory>
 #include <OpenCL/opencl.h>
 
 #include "SDL2/SDL.h"
-#include "SDL_image.h"
+//#include "SDL_image.h"
 
 
 cl_device_id g_cl_device=0;
 cl_context gcl=0;
 cl_command_queue gclq=0;
 
-#define TRACE printf("%s:%d\n",__FILE__,__LINE__);
+#define TRACE printf("%s:%d %s\n",__FILE__,__LINE__,__FUNCTION__);
 
 void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 	if (errcode==0) {return;}
@@ -79,22 +81,22 @@ void opencl_init() {
 // does it work?
 
 cl_program cl_load_program(const char* prgname) {
+    struct stat s; stat(prgname,&s); 
 	FILE* fp = fopen(prgname,"rb");
 	if (!fp) {
 		printf("can't load %s\n",prgname);
 		exit(0);
 	}
 	cl_int ret=0;
-	size_t srclen=0;
-	fseek(fp,0,SEEK_END); srclen=ftell(fp); fseek(fp,0,SEEK_SET);
-	const char* kernel_src = (const char*) malloc(srclen);
+	
+    const char* kernel_src=(const char*) malloc(s.st_size);
 
-	fread((void*) kernel_src,1,srclen,fp);
+	fread((void*) kernel_src,1,s.st_size,fp);
 	fclose(fp);
-	printf("%s",kernel_src);
+    printf("loaded %s %d bytes\n",prgname,(int)s.st_size);
 
-    
-	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&srclen, &ret);
+	cl_program  prg = clCreateProgramWithSource(gcl, 1, (const char**) &kernel_src,(const size_t*)&s.st_size, &ret);
+    free((void*)kernel_src);
     
 	CL_VERIFY(ret);
 
@@ -125,22 +127,26 @@ struct Int3 {
     int x,y,z;Int3(){x=0;y=0,z=0;}Int3(int x,int y,int z){this->x=x;this->y=y;this->z=z;}int hmul()const{return x*y*z;}
     template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
+    Int2 xy()const{return Int2(x,y);}
 };
 struct Int4 {
     int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
     template<typename T>
     operator std::array<T,4>() const {return std::array<T,4>({(T)this->x,(T)this->y,(T)this->z,(T)this->w});}
+    Int2 xy()const{return Int2(x,y);}
+    Int3 xyz()const{return Int3(x,y,z);}
 };
 
+template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"("<<src.x<<","<<src.y<<")";}
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
 
 template<typename T=float>
 struct Buffer {
-    Int4 shape;
+    Int4 shape=Int4(0,0,0,0);
     T* data=nullptr;
     cl_mem device_buffer=0;
-    
-    Buffer(Int4 shape, std::function<T(int)> generate=[](int i){return T();}, cl_int mode=CL_MEM_READ_ONLY) {
+    void set_size(Int4 shape, std::function<T(int)> generate = [](int x){return T();}, cl_int mode = CL_MEM_READ_WRITE) {
+        assert(data==nullptr);
         this->shape=shape;
         std::cout<<"creating buffer: ["<<this->shape<<"\n";
         
@@ -153,6 +159,11 @@ struct Buffer {
         if (mode!=CL_MEM_WRITE_ONLY){
             this->to_device();
         }
+    }
+    Buffer() {}
+    
+    Buffer(Int4 shape, std::function<T(int)> generate=[](int i){return T();}, cl_int mode=CL_MEM_READ_ONLY) {
+        this->set_size(shape, generate,mode);
     }
     Buffer(Int4 shape, const T* src, cl_int mode=CL_MEM_READ_ONLY) : Buffer(shape, [&](int i){return src[i];},mode){
         
@@ -189,37 +200,40 @@ struct Buffer {
 
 template<typename F,typename T>
 F& operator<<(F& dst, const Buffer<T>& src) {
+    // TODO distinguish debug print
     dst<<src.shape<<"\n";
-    int numy=src.shape.y*src.shape.z*src.shape.w;
+    int numz=src.shape.z*src.shape.w;
     // jst print as 2d, todo..
     dst<<"[\n";
-    for (int j=0; j<numy; j++) {
-        if (src.shape.x<16) {
+    for (int k=0; k<numz; k++) {
+        dst<<"\t[\n";
+        for (int j=0; j<src.shape.y; j++) {
+            int num_to_show=src.shape.x<16?src.shape.x:16;
+            
             dst<<"\t\t[";
-            for (int i=0; i<src.shape.x; i++) {
+            for (int i=0; i<num_to_show; i++) {
                 dst <<src[i+j*src.shape.x] << "\t";
             }
-            dst<<"]\n";
-        } else {
-            dst<<"\t[\n";
-            for (int i=0; i<src.shape.x; i++) {
-                dst <<"\t\t"<<src[i+j*src.shape.x] << "\n";
-            }
+            if (src.shape.x>num_to_show){dst<<"...";}
             dst<<"\t]\n";
         }
+        dst<<"\t]\n";
     }
     dst<<"]\n";
     return dst;
 }
 
 struct Program {
+    std::string progname;
     cl_program prog=0;
     Program(){this->prog=0;}
     Program(const char* filename){
+        this->progname=filename;
         this->prog= cl_load_program(filename);
     }
     Program(Program&& src){this->prog=src.prog;src.prog=0;}
     ~Program(){
+        std::cout<<"releasing program " <<this->progname<<"\n";
         if (this->prog){
             clReleaseProgram(this->prog); 
             this->prog=0;
@@ -228,13 +242,15 @@ struct Program {
 };
 
 struct Kernel {
+    std::shared_ptr<Program> program;
     cl_kernel kernel;
     cl_int num_args=0;
     cl_int arg_set=0;
-    Kernel(const Program& prg, const char* entry) {
-        assert(prg.prog);
+    Kernel(std::shared_ptr<Program>  prg, const char* entry) {
+        assert(prg->prog);
+        this->program=prg;
         cl_int ret;
-        this->kernel = clCreateKernel(prg.prog, entry, &ret);	CL_VERIFY(ret);
+        this->kernel = clCreateKernel(prg->prog, entry, &ret);	CL_VERIFY(ret);
         size_t sz;
         ret=clGetKernelInfo(this->kernel,CL_KERNEL_NUM_ARGS,sizeof(this->num_args),(void*)&this->num_args,&sz);
         
@@ -262,7 +278,7 @@ struct Kernel {
     }
 
     // setting a buffer is specialization.. ths looks horrid after rust.
-    template<>
+    //template<>
     template<typename T>
     void set_arg(int arg_index, Buffer<T>& x){
         x.set_arg_of(this->kernel, arg_index);
@@ -303,7 +319,8 @@ struct Kernel {
 
 };
 
-void opencl_test_conv() {
+void opencl_test_basic() {
+    TRACE
 	cl_int ret;
 	int testsize=64;
     auto size=Int4(testsize,1,1,1);
@@ -311,7 +328,7 @@ void opencl_test_conv() {
     auto buffer_b = Buffer<float>(size,[&](auto i){return (float)(testsize-i);}); 
     auto buffer_c = Buffer<float>(size,[&](auto i){return 0.0f;}, CL_MEM_READ_WRITE);
 	
-    Program prg("kernel.cl");
+    auto prg = std::make_shared<Program>("kernel.cl");
 	auto kernel=Kernel(prg,"vector_add_scaled");
     kernel.set_args(buffer_a,buffer_b,buffer_c, 1000.0f, 1.0f);
 
@@ -329,23 +346,146 @@ void opencl_test_conv() {
 void opencl_shutdown() {
 	clReleaseCommandQueue(gclq); gclq=0;
 	clReleaseContext(gcl); gcl=0;
-	
 }
+
+
+typedef int nodeid;
+
+struct Node;
+struct NeuralNet {
+    friend Node;
+    std::vector<Node*> nodes;
+    
+    void push_node(Node* n);
+    ~NeuralNet() noexcept;
+    void dump();
+};
+
+struct Node {
+    friend NeuralNet;
+    NeuralNet* net;
+    Buffer<float> activations;
+    // todo: smallvector, node inptu counts are 0,1,2
+    void dump_base() {
+        auto shape=this->activations.shape;
+        printf("node [%d]\ttype=%s\tshape=[%d %d %d %d]\n",this->index,this->name(), shape.x,shape.y,shape.z,shape.w);
+        if (this->inputs.size()>0){
+            if (this->inputs.size()==1) {printf("input=node[%d]\n",this->inputs[0]);}
+            else {
+                printf("inputs=[");
+                for (int i=0; i<this->inputs.size(); i++){
+                    printf("%d ",this->inputs[i]);
+                }
+                printf("]\n");
+            }
+        }
+    }
+    int channels() const{return activations.shape.z;}
+    int width() const {return activations.shape.x;}
+    int height() const {return activations.shape.y;}
+
+protected:
+    nodeid index;
+    std::vector<nodeid> inputs;
+    void set_size(Int3 size){
+        activations.set_size(Int4(size.x,size.y,size.z,1));
+    }
+    virtual const char* name() const=0;
+    Node(NeuralNet* _net) {
+        this->net = _net;
+        this->index=(nodeid)_net->nodes.size();
+        this->net->nodes.push_back(this);
+    }
+    Node(NeuralNet* net,nodeid _input) : Node(net){inputs.resize(1);inputs[0] = _input<0?index-1:_input;}    
+    Node(NeuralNet* net,nodeid src0,nodeid src1) : Node(net){inputs.resize(2);inputs[0] = src0<0?index-1:src0;inputs[1] = src1<0?index-1:src1;}
+    Node* input_node(int i)const{return net->nodes[this->inputs[i]];}
+    virtual ~Node();
+    virtual void dump(){};
+};
+
+NeuralNet::~NeuralNet() noexcept{
+    for (auto x : this->nodes) {
+        assert(x->net==this);
+        delete x;
+    }
+}
+
+void NeuralNet::dump() {
+    for (auto n :nodes) {
+        n->dump_base();
+        n->dump();
+    }
+}
+Node::~Node() {printf("destructing node %d\n",this->index);}
+struct NodeUnary : public Node{
+    
+    
+};
+class Conv2d : public Node{
+    Buffer<float> filter;
+    const char* name() const override{return "Conv2d";};
+
+    void dump() override {
+        printf("filter_shape=[%d %d %d %d]\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
+    }
+public:    
+    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int stride=1) :Node(owner,_input){
+        auto inp=input_node(0);
+        int input_channels=inp->channels();
+        this->set_size( Int3(inp->width()/stride,inp->height()/stride, _channels_out) );
+        filter.set_size(Int4(_size.x,_size.y, input_channels,_channels_out));
+    }
+};
+class AvPool2x2 : public Node {
+    const char* name() const override{return "AvPool2x2";}
+public:
+    AvPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,_input){
+        auto inp=input_node(0);
+        this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
+    }
+};
+class Expand2x2 : public Node {
+    const char* name() const override{return "AvPool2x2";}
+public:
+    Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,_input){
+        auto inp=input_node(0);
+        this->set_size( Int3(inp->width()*2,inp->height()*2,inp->channels()));
+    }
+};
+
+class InputImage : Node{
+    const char* name() const override{return "InputImage";};
+    void dump() override {}
+public:
+    InputImage(NeuralNet* net, Int3 _size) : Node(net) {
+        this->set_size(_size);
+    }
+};
+
+void test_setup_convnet() {
+    NeuralNet net;
+    new InputImage(&net, Int3(256,256,3));
+    new Conv2d(&net,-1 , Int2(3,3), 16, 1);
+    new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 32, 1);
+    new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 64, 1);
+    new AvPool2x2(&net);
+    net.dump();
+}
+
 
 int SCREEN_HEIGHT = 800;
 int SCREEN_WIDTH = 600;
-int main() {
-
+void run_window_main_loop() {
+	SDL_Event event;
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_Window *window = SDL_CreateWindow("SDL Game", 0, 0, 
 		SCREEN_HEIGHT, SCREEN_WIDTH, SDL_WINDOW_HIDDEN);
 	SDL_ShowWindow(window);
-	SDL_Event event;
-
-	opencl_init();
-	opencl_test_conv();
-	opencl_shutdown();
-
+    SDL_Renderer* rs=SDL_CreateRenderer(window,-1,0);
+    
+    int frame=0;
 	int running = 1;
 	while(running) {
 		while(SDL_PollEvent(&event)) {
@@ -353,9 +493,26 @@ int main() {
 				running = 0;
 			}
 		}
-		SDL_Delay( 32 );
+        frame+=1;
+        SDL_SetRenderDrawColor(rs, frame&255, frame&1?128:0, 0, 255);
+
+        SDL_RenderClear(rs);
+        
+        SDL_RenderPresent(rs);
+
 	}
 	SDL_DestroyWindow(window);
 	SDL_Quit();
+}
+
+int main() {
+
+
+	opencl_init();
+	opencl_test_basic();
+    test_setup_convnet();
+    run_window_main_loop();
+	opencl_shutdown();
+
 	return 0;
 }
