@@ -136,7 +136,11 @@ struct Int3 {
     template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
     Int2 xy()const{return Int2(x,y);}
+    Int3 min(const Int3& src)const{
+        return Int3(std::min(x,src.x),std::min(y,src.y),std::min(z,src.z));
+    }
 };
+
 struct Int4 {
     int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
     bool operator==(const Int4& other)const{return x==other.x&&y==other.y&&z==other.z&&w==other.w;}
@@ -145,69 +149,84 @@ struct Int4 {
     Int2 xy()const{return Int2(x,y);}
     Int3 xyz()const{return Int3(x,y,z);}
 };
+inline size_t flatten_index(const Int4& shape, const Int4& pos) {
+    return pos.x + shape.x*(pos.y + shape.y*(pos.z+ shape.z*pos.w));
+}
 
-template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"("<<src.x<<","<<src.y<<")";}
-template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
+template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"["<<src.x<<","<<src.y<<"]";}
+template<typename T> T& operator<<(T& dst, const Int3& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<"]";}
+template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<"]";}
 
 template<typename T=float, const int INTERLEAVEZ=1> 
 struct Buffer {
-    // TODO: try INTERLEAVEZ=4 for unrolling in kernels.
+    // TODO: try INTERLEAVEZ=4 for unrolling in kernels?
     // layout [z&3][x][y][z/4][w]
 
     Int4 shape=Int4(0,0,0,0);
-    T* data=nullptr;
+    std::vector<T> data;
     cl_mem device_buffer=0;
-    void set_size(Int4 shape, std::function<T(int)> generate = [](int x){return T();}, cl_int mode = CL_MEM_READ_WRITE) {
-        assert(data==nullptr);
+    void generate_with(std::function<T(Int4)> genf) {
+        for (int l=0; l<this->shape.w; l++) {
+            for (int k=0; k<this->shape.z; k++) {
+                for (int j=0; j<this->shape.y; j++) {
+                    for (int i=0; i<this->shape.x; i++) {
+                        auto pos=Int4(i,j,k,l);
+                        this->operator[](pos) = genf(pos);
+                    }
+                }
+            }
+        }
+    }
+    void set_size(Int4 shape, std::function<T(Int4)> generate_f = [](Int4 pos){return T();}, cl_int mode = CL_MEM_READ_WRITE) {
+        assert(data.size()==0 && "resize not supported yet");
         this->shape=shape;
         std::cout<<"creating buffer: ["<<this->shape<<"\n";
         
-        this->data = new T[shape.hmul()];
+        this->data.resize(total_elems());
         cl_int ret;
-        this->device_buffer =clCreateBuffer(gcl, mode, sizeof(T)*this->total_size() , NULL, &ret); CL_VERIFY(ret);
-        for (int i=0; i<this->total_size(); i++) {
-            this->data[i] = generate(i);
-        }
+        this->device_buffer =clCreateBuffer(gcl, mode, this->total_bytes() , NULL, &ret); CL_VERIFY(ret);
+        this->generate_with(generate_f);
         if (mode!=CL_MEM_WRITE_ONLY){
             this->to_device();
         }
     }
     Buffer() {}
     
-    Buffer(Int4 shape, std::function<T(int)> generate=[](int i){return T();}, cl_int mode=CL_MEM_READ_ONLY) {
-        this->set_size(shape, generate,mode);
+    Buffer(Int4 shape, std::function<T(Int4)> generate_f=[](Int4){return T();}, cl_int mode=CL_MEM_READ_WRITE) {
+        this->set_size(shape, generate_f,mode);
     }
-    Buffer(Int4 shape, const T* src, cl_int mode=CL_MEM_READ_ONLY) : Buffer(shape, [&](int i){return src[i];},mode){
-        
+    Buffer(Int4 shape, const T* src, cl_int mode=CL_MEM_READ_WRITE) 
+        : Buffer(shape, 
+            [&](Int4 pos){
+                return src[flatten_index(shape,pos)];},mode)
+    {    
     }
     Buffer(Buffer<T>&& src) {
         this->shape =src.shape;
         src.shape=Int4();
-        this->data=src.data;
-        src.data=nullptr;
+        this->data=std::move(src.data);
         this->device_buffer = src.device_buffer;
         src.device_buffer=0;
     }
     ~Buffer() {
-        if (this->data){delete[] this->data;}
         if (this->device_buffer) {
             clReleaseMemObject(this->device_buffer);
         }
     }
-    void set_arg_of(cl_kernel kernel, int arg_index) const {
-        auto ret=clSetKernelArg(kernel, arg_index, sizeof(cl_mem), (void*)&this->device_buffer); CL_VERIFY(ret);
-    }
     
-    int total_size() const{return shape.hmul();}
+    size_t total_elems() const{return shape.hmul();}
+    size_t total_bytes() const{return total_elems()*sizeof(T);}
     void to_device() {
-        auto ret=clEnqueueWriteBuffer(gclq, this->device_buffer, CL_TRUE,0, this->total_size()*sizeof(T), (void*) this->data, 0, NULL,NULL); CL_VERIFY(ret);
+        auto ret=clEnqueueWriteBuffer(gclq, this->device_buffer, CL_TRUE,0, this->total_bytes(), (void*) &this->data[0], 0, NULL,NULL); CL_VERIFY(ret);
     }
     void from_device() {
-        auto ret=clEnqueueReadBuffer(gclq, this->device_buffer, CL_TRUE, 0, sizeof(T)*this->total_size(), this->data, 0, NULL,NULL);
+        auto ret=clEnqueueReadBuffer(gclq, this->device_buffer, CL_TRUE, 0, this->total_bytes(), &this->data[0], 0, NULL,NULL);
         CL_VERIFY(ret);
     }
+    // both linear and 4d indices
     const T& operator[](int i) const{return this->data[i];}
     T& operator[](int i){return this->data[i];}
+    T& operator[](Int4 pos){return this->data[flatten_index(shape,pos)];}
 };
 
 template<typename F,typename T>
@@ -224,7 +243,7 @@ F& operator<<(F& dst, const Buffer<T>& src) {
             
             dst<<"\t\t[";
             for (int i=0; i<num_to_show; i++) {
-                dst <<src[i+j*src.shape.x] << "\t";
+                dst <<src[i+src.shape.x*(j+src.shape.y*(k+ src.shape.z*0))] << "\t";
             }
             if (src.shape.x>num_to_show){dst<<"...";}
             dst<<"\t]\n";
@@ -285,53 +304,41 @@ struct Kernel {
         verify_args();
         auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 1, NULL, &globalsize,&localsize, 0, NULL,NULL); CL_VERIFY(ret);
     }
-    void enqueue_range_2d(Int2 _globalsize,Int2 _localsize) {
-        auto globalsize=(std::array<size_t,2>)_globalsize;
-        auto localsize=(std::array<size_t,2>)_localsize;
+    void enqueue_range_3d(Int3 _globalsize,Int3 _localsize) {
+        auto globalsize=(std::array<size_t,3>)_globalsize;
+        auto localsize=(std::array<size_t,3>)_localsize;
         verify_args();
-        auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 2, NULL, &globalsize[0],&localsize[0], 0, NULL,NULL); CL_VERIFY(ret);
+        auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 3, NULL, &globalsize[0],&localsize[0], 0, NULL,NULL); CL_VERIFY(ret);
+    }
+
+    template<typename T>
+    void set_arg_buffer_shape(int arg_index, Buffer<T>& src){
+        this->set_arg(arg_index,src);
+        this->set_arg(arg_index+1,src.shape);
+        
+        assert(arg_index+1<this->num_args);
+        this->arg_set|=3<<arg_index;
     }
 
     // setting a buffer is specialization.. ths looks horrid after rust.
     //template<>
     template<typename T>
-    void set_arg(int arg_index, Buffer<T>& x){
-        x.set_arg_of(this->kernel, arg_index);
-        assert(arg_index<this->num_args);
+    auto set_arg(int arg_index, const Buffer<T>& x)->decltype(*this)&{
+        if (arg_index>=this->num_args) {
+            std::cout<<arg_index<<" "<<this->num_args<<"\n";
+            assert(arg_index<this->num_args);
+        }
+        auto ret=clSetKernelArg(this->kernel, arg_index, sizeof(cl_mem), (void*)&x.device_buffer); CL_VERIFY(ret);
         this->arg_set|=1<<arg_index;
+        return *this;
     }
     template<typename T>
-    void set_arg(int arg_index, const T& val){  
+    auto set_arg(int arg_index, const T& val)->decltype(*this){  
         assert(arg_index<this->num_args);
         auto ret=clSetKernelArg(this->kernel, arg_index, (size_t) sizeof(T), (const void*)&val); CL_VERIFY(ret);
         this->arg_set|=1<<arg_index;
+        return *this;
     }
-
-    template<typename A,typename B>
-    void set_args(Buffer<A>& a, Buffer<B>& b){
-        this->set_arg(0,a);this->set_arg(1,b);
-    }
-    template<typename A,typename B,typename C>
-    void set_args(Buffer<A>& a, Buffer<B>& b, Buffer<C>& c){
-        this->set_arg(0,a);this->set_arg(1,b);this->set_arg(2,c);
-    }
-    // todo -figure out variadic template mixing Buffer<X>& and const Y&
-    template<typename A,typename B,typename C,typename... D>
-    void set_args(Buffer<A>& a, Buffer<B>& b, Buffer<C>& c,D... rest){
-        this->set_arg(0,a);this->set_arg(1,b);this->set_arg(2,c);
-        this->set_args_at(3,rest...);
-    }
-    template<typename X>
-    void set_args_at(int index,const X& x){
-        this->set_arg(index,x);
-    }
-    template<typename X,typename... Rest>
-    void set_args_at(int index,const X& x,Rest... rest){
-        this->set_arg(index,x);
-        this->set_args_at(index+1,rest...);
-    }
-
-
 };
 
 void opencl_test_basic() {
@@ -339,13 +346,13 @@ void opencl_test_basic() {
 	cl_int ret;
 	int testsize=64;
     auto size=Int4(testsize,1,1,1);
-    auto buffer_a = Buffer<float>(size,[&](auto i){return (float)i;});
-    auto buffer_b = Buffer<float>(size,[&](auto i){return (float)(testsize-i);}); 
-    auto buffer_c = Buffer<float>(size,[&](auto i){return 0.0f;}, CL_MEM_READ_WRITE);
+    auto buffer_a = Buffer<float>(size,[&](Int4 pos){return (float)pos.x;});
+    auto buffer_b = Buffer<float>(size,[&](Int4 pos){return (float)(testsize-pos.x);}); 
+    auto buffer_c = Buffer<float>(size,[&](Int4 pos){return 0.0f;});
 	
     auto prg = std::make_shared<Program>("kernel.cl");
 	auto kernel=Kernel(prg,"vector_add_scaled");
-    kernel.set_args(buffer_c, buffer_a,buffer_b, 1000.0f, 1.0f);
+    kernel.set_arg(0,buffer_c).set_arg(1,buffer_a).set_arg(2,buffer_b).set_arg(3,1000.0f).set_arg(4,1.0f);
 
     kernel.enqueue_range(testsize,64);
 	
@@ -372,7 +379,7 @@ struct NeuralNet {
     std::vector<Node*> nodes;
     std::shared_ptr<Program> prg = std::make_shared<Program>("kernel.cl");
     std::map<std::string,std::shared_ptr<Kernel>> used_kernels;
-    
+    Node* last_node(){assert(nodes.size()>0);return nodes[nodes.size()-1];}
     void push_node(Node* n);
     ~NeuralNet() noexcept;
     void dump();
@@ -386,6 +393,7 @@ struct NeuralNet {
             return ret;
         }
     }
+    void eval();
 };
 
 struct Node {
@@ -398,19 +406,23 @@ struct Node {
     void dump_base() {
         
         auto shape=this->activations.shape;
-        printf("node [%d]\ttype=%s\tshape=[%d %d %d %d]\t%s()\n",this->index,this->name(), shape.x,shape.y,shape.z,shape.w, this->kernel_name());
+        printf("\t\t\"index\":%d,\t\"type\":\"%s\",\t\"shape\":[%d,%d,%d,%d],\t\"function\":\"%s\",\n",
+                this->index,
+                this->name(),
+                shape.x,shape.y,shape.z,shape.w,
+                this->kernel_name());
         if (this->inputs.size()>0){
-            if (this->inputs.size()==1) {printf("input=node[%d]\n",this->inputs[0]);}
-            else {
-                printf("inputs=[");
-                for (int i=0; i<this->inputs.size(); i++){
-                    printf("%d ",this->inputs[i]);
-                }
-                printf("]\n");
+            printf("\t\t\"inputs\":[");
+            for (int i=0; i<this->inputs.size(); i++){
+                printf("%d,",this->inputs[i]);
+
             }
+            printf("],\n");
         }
         
+        
     }
+    virtual void eval();
     virtual void set_extra_args(int basearg) {}
     int channels() const{return activations.shape.z;}
     int width() const {return activations.shape.x;}
@@ -436,9 +448,9 @@ protected:
     Node(NeuralNet* net, const char* entrypt,nodeid _input) : Node(net,entrypt){inputs.resize(1);inputs[0] = _input<0?this->index+_input:_input;}    
     Node(NeuralNet* net,const char* entrypt,nodeid src0,nodeid src1) : Node(net,entrypt){inputs.resize(2);inputs[0] = src0<0?this->index+src0:src0;inputs[1] = src1<0?this->index+src1:src1;}
     Node* input_node(int i)const{return net->nodes[this->inputs[i]];}
-    void set_kernel_args();
+    void set_kernel_buffer_args();
     virtual ~Node();
-    virtual void dump(){};
+    virtual void dump_extra(){};
 };
 
 NeuralNet::~NeuralNet() noexcept{
@@ -451,51 +463,102 @@ NeuralNet::~NeuralNet() noexcept{
 }
 
 void NeuralNet::dump() {
+    printf("[\n");
     for (auto n :nodes) {
+        printf("\t{\n");
         n->dump_base();
-        n->dump();
+        n->dump_extra();
+        printf("\t},\n");
+    }
+    printf("]\n");
+}
+void NeuralNet::eval() {
+    for (auto& node : this->nodes) {
+        for (auto& x:node->inputs){
+            assert(x < node->index && "directed node graph, sources must preceed dests");
+        }
+        node->eval();
     }
 }
-void Node::set_kernel_args(){
+
+void Node::set_kernel_buffer_args(){
     assert(this->kernel!=nullptr);
-    this->kernel->set_arg(0,this->activations);
-    for (int i=0; i<this->inputs.size(); i++) {
-        this->kernel->set_arg(i+1, this->input_node(i)->activations);
+    // conventoin expected by kernel code: first arg is destination
+    // alternate buffer and shape data
+    this->kernel->set_arg_buffer_shape(0,this->activations);
+    // then list sources
+    for (size_t i=0; i<this->inputs.size(); i++) {
+        this->kernel->set_arg_buffer_shape((i+1)*2, this->input_node(i)->activations);
     }
-    this->set_extra_args(this->inputs.size()+1);
+    // kernel custom args follow
+    
 }
+Int3 smallest_pot_below(const Int3& a, const Int3& b){
+    auto ret=a;
+    while (ret.x>b.x){ret.x/=2;}
+    while (ret.y>b.y){ret.y/=2;}
+    while (ret.z>b.z){ret.z/=2;}
+    return ret;
+}
+void Node::eval() {
+    printf("eval node:%s{\n",this->name());
+    if (this->kernel==nullptr) {return;}
+    this->set_kernel_buffer_args();
+    this->set_extra_args((this->inputs.size()+1)*2);
+    // todo - tweaking of localsize
+    assert(this->activations.shape.w==1 && "node sizes must be 3d");
+    auto grpsize=smallest_pot_below(Int3(4,4,4),this->activations.shape.xyz());
+    std::cout<<grpsize<<" "<<this->activations.shape.xyz()<<"\n";
+    
+    this->kernel->enqueue_range_3d( this->activations.shape.xyz(), grpsize);
+    printf("}\n");
+}
+
 Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
 class Conv2d : public Node{
     Buffer<float> filter;
     const char* name() const override{return "Conv2d";};
+    Int2 stride;
+    float negfactor=0.0f;
 
-    void dump() override {
-        printf("filter_shape=[%d %d %d %d]\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
+    void dump_extra() override {
+        printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
+    }
+    void set_extra_args(int argid) override{
+        assert(argid==4);
+        this->kernel->set_arg_buffer_shape(argid,filter);
+        this->kernel->set_arg(argid+2, this->stride);
+        this->kernel->set_arg(argid+3, this->negfactor);
     }
 public:    
-    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int stride=1) :Node(owner,"conv2d",_input){
+    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_planar",_input), stride(_stride,_stride),negfactor(_negf){
         auto inp=input_node(0);
         int input_channels=inp->channels();
-        this->set_size( Int3(inp->width()/stride,inp->height()/stride, _channels_out) );
+        this->set_size( Int3(inp->width()/stride.x,inp->height()/stride.y, _channels_out) );
         filter.set_size(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
 class FullyConnected : public Node {
-    Buffer<float> weights;
+    Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
 public:
-    FullyConnected(NeuralNet* owner, int _input, int _channels_out) : Node(owner,"matmul",_input) {
+    FullyConnected(NeuralNet* owner, int _input, int _channels_out) : Node(owner,"matmul_on_z",_input) {
         auto inp=input_node(0);
         auto s=inp->activations.shape.hmul();
         assert(s==inp->activations.shape.z && "input to fully connected layer must be flattened to Z, assumptions for interleave..");
-        this->weights.set_size(Int4(1,1, s, _channels_out));
+        this->matrix_weights.set_size(Int4(1,1, s, _channels_out));
         this->set_size( Int3(1,1, _channels_out));
     }
+    void set_extra_args(int argid) override{
+        assert(argid==4);
+        this->kernel->set_arg_buffer_shape(argid,matrix_weights);
+    }
+
 };
-class Concat : public Node {
-    const char* name() const override{return "Concat";}
+class ConcatZ : public Node {
+    const char* name() const override{return "ConcatZ";}
 public:
-    Concat(NeuralNet* owner, int src0, int src1) :Node(owner,"concat",src0,src1) {
+    ConcatZ(NeuralNet* owner, int src0, int src1) :Node(owner,"concat_z",src0,src1) {
         auto in0=this->input_node(0),in1=this->input_node(1);
         assert(in0->width()==in1->width() && in0->height()==in1->height());
         this->set_size(Int3(in0->width(),in0->height(), in0->channels()+in1->channels()));
@@ -503,7 +566,7 @@ public:
 };
 
 class Add : public Node {
-    const char* name() const override{return "Concat";}
+    const char* name() const override{return "Add";}
 public:
     Add(NeuralNet* owner, int src0, int src1) :Node(owner,"vector_add",src0,src1) {
         auto in0=this->input_node(0),in1=this->input_node(1);
@@ -520,6 +583,15 @@ public:
         this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
     }
 };
+class DebugFill : public Node {
+    const char* name() const override{return "DebugFill";}
+public:
+    DebugFill(NeuralNet* owner,int _input=-1) : Node(owner,"debug_fill",_input){
+        auto inp=input_node(0);
+        this->set_size( input_node(0)->activations.shape.xyz() );
+    }
+};
+
 
 class MaxPool2x2 : public Node {
     const char* name() const override{return "MaxPool2x2";}
@@ -531,7 +603,7 @@ public:
 };
 
 class Expand2x2 : public Node {
-    const char* name() const override{return "AvPool2x2";}
+    const char* name() const override{return "Expand2x2";}
 public:
     Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,"expand2x2",_input){
         auto inp=input_node(0);
@@ -545,11 +617,13 @@ public:
         auto inp=input_node(0);
         this->set_size( Int3(1,1, inp->width()*inp->height()*inp->channels()) );
     }
+    void eval() override {
+        // NOP until we have interleave
+    }
 };
 
 class InputImage : Node{
     const char* name() const override{return "InputImage";};
-    void dump() override {}
 public:
     InputImage(NeuralNet* net, Int3 _size) : Node(net,nullptr) {
         this->set_size(_size);
@@ -566,12 +640,18 @@ void test_setup_convnet() {
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
-    new Concat(&net,-1,-2);
+    new ConcatZ(&net,-1,-2); // for densenets, shortcuts
     new AvPool2x2(&net);
     new FlattenToZ(&net);
     new FullyConnected(&net,-1, 128);
+    new FullyConnected(&net,-1, 32);
 
     net.dump();
+    TRACE
+    net.eval();
+    net.last_node()->activations.from_device();
+    std::cout<<net.last_node()->activations;
+    TRACE
 }
 
 
