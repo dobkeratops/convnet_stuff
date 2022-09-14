@@ -157,6 +157,7 @@ template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"["<<src
 template<typename T> T& operator<<(T& dst, const Int3& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<"]";}
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<"]";}
 
+float frands(){ int x=rand();return  (1.0/(float)0x8000)*(float)((x&0xffff)-0x8000);}
 template<typename T=float, const int INTERLEAVEZ=1> 
 struct Buffer {
     // TODO: try INTERLEAVEZ=4 for unrolling in kernels?
@@ -190,6 +191,7 @@ struct Buffer {
             this->to_device();
         }
     }
+    void init_random(Int4 shape){this->set_size(shape, [](Int4 pos){return frands();});}
     Buffer() {}
     
     Buffer(Int4 shape, std::function<T(Int4)> generate_f=[](Int4){return T();}, cl_int mode=CL_MEM_READ_WRITE) {
@@ -435,7 +437,7 @@ protected:
     nodeid index;
     std::vector<nodeid> inputs;
     void set_size(Int3 size){
-        activations.set_size(Int4(size.x,size.y,size.z,1));
+        activations.init_random(Int4(size.x,size.y,size.z,1));
     }
     virtual const char* name() const=0;
     Node(NeuralNet* _net, const char* kernel_entrypt) {
@@ -554,7 +556,7 @@ public:
         auto inp=input_node(0);
         int input_channels=inp->channels();
         this->set_size( Int3(inp->width()/stride.x,inp->height()/stride.y, _channels_out) );
-        filter.set_size(Int4(_size.x,_size.y, input_channels,_channels_out));
+        filter.init_random(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
 class FullyConnected : public Node {
@@ -634,7 +636,7 @@ public:
     }
 };
 class FlattenToZ : public Node {
-    const char* name() const override{return "FlattenZ";}
+    const char* name() const override{return "FlattenToZ";}
 public:
     FlattenToZ(NeuralNet* owner,int _input=-1) : Node(owner,"flatten_to_z",_input){
         auto inp=input_node(0);
@@ -667,17 +669,24 @@ void test_setup_convnet() {
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 256, 1);
     new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 512, 1);
+    new Conv2d(&net,-1 , Int2(3,3), 512, 1);// reduce it to make an image we can display
     new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 3, 1);
+    
 
+/*
     new FlattenToZ(&net);
     new FullyConnected(&net,-1, 128);
     new FullyConnected(&net,-1, 32);
-
+*/
     net.dump();
     TRACE
     net.eval();
+    net.nodes[0]->activations.from_device();
+    std::cout<<net.nodes[0]->activations;
+
     net.last_node()->activations.from_device();
+    std::cout<<"output:\n";
     std::cout<<net.last_node()->activations;
     TRACE
 }

@@ -49,8 +49,9 @@ __kernel void avpool2x2(__global float* dst,int4 dstsize, __global const float* 
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
-    int srci=lin_index(src0size,i*2,j*2,k*2);
-    float val=0.25f*(src0[srci] + src0[srci+1] + src0[srci+src0size.x]+src0[srci+src0size.x+1]);
+    int si=lin_index(src0size,i*2,j*2,k);
+    float val=0.25f*(src0[si] + src0[si+1] + src0[si+src0size.x]+src0[si+src0size.x+1]);
+    //float val  = get3df(src0,src0size, i*2,j*2,k);
     set3df(dst,dstsize,i,j,k, val);
 }
 
