@@ -376,6 +376,7 @@ typedef int nodeid;
 struct Node;
 struct NeuralNet {
     friend Node;
+    struct Cost {int fmadds=0;int parameters=0; int activations=0;};
     std::vector<Node*> nodes;
     std::shared_ptr<Program> prg = std::make_shared<Program>("kernel.cl");
     std::map<std::string,std::shared_ptr<Kernel>> used_kernels;
@@ -383,6 +384,7 @@ struct NeuralNet {
     void push_node(Node* n);
     ~NeuralNet() noexcept;
     void dump();
+    Cost estimate_cost() const;
     std::shared_ptr<Kernel> get_kernel(const char* entrypt) {
         auto strname=std::string(entrypt);
         if (used_kernels.contains(strname)) {
@@ -424,6 +426,7 @@ struct Node {
     }
     virtual void eval();
     virtual void set_extra_args(int basearg) {}
+    virtual void estimate_cost(NeuralNet::Cost*) const{};
     int channels() const{return activations.shape.z;}
     int width() const {return activations.shape.x;}
     int height() const {return activations.shape.y;}
@@ -453,6 +456,12 @@ protected:
     virtual void dump_extra(){};
 };
 
+NeuralNet::Cost NeuralNet::estimate_cost() const{
+    NeuralNet::Cost c;
+    for (auto& n:nodes){n->estimate_cost(&c); c.activations+=n->activations.shape.hmul();}
+    return c;
+}
+
 NeuralNet::~NeuralNet() noexcept{
     printf("destructing neuralnet");
     for (auto x : this->nodes) {
@@ -463,14 +472,20 @@ NeuralNet::~NeuralNet() noexcept{
 }
 
 void NeuralNet::dump() {
-    printf("[\n");
+    printf("{\"nodes\":[\n");
     for (auto n :nodes) {
         printf("\t{\n");
         n->dump_base();
         n->dump_extra();
         printf("\t},\n");
     }
-    printf("]\n");
+    printf("],\n");
+    auto tmp=this->estimate_cost();
+    printf("\"cost\":{\n\t\"parameters\":%d\n",tmp.parameters);
+    printf("\t\"fmadds\":%d\n",tmp.fmadds);
+    printf("\t\"activations\":%d\n",tmp.activations);
+    printf("\t}\n");
+    printf("}\n");
 }
 void NeuralNet::eval() {
     for (auto& node : this->nodes) {
@@ -530,6 +545,10 @@ class Conv2d : public Node{
         this->kernel->set_arg(argid+2, this->stride);
         this->kernel->set_arg(argid+3, this->negfactor);
     }
+    void estimate_cost(NeuralNet::Cost* dst) const override {
+        dst->parameters+=filter.shape.hmul();
+        dst->fmadds+=filter.shape.hmul() * activations.shape.x* activations.shape.y;
+    }
 public:    
     Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_planar",_input), stride(_stride,_stride),negfactor(_negf){
         auto inp=input_node(0);
@@ -542,6 +561,10 @@ class FullyConnected : public Node {
     Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
 public:
+    void estimate_cost(NeuralNet::Cost* c)const{
+        c->fmadds+=matrix_weights.shape.hmul();
+        c->parameters+=matrix_weights.shape.hmul();
+    }
     FullyConnected(NeuralNet* owner, int _input, int _channels_out) : Node(owner,"matmul_on_z",_input) {
         auto inp=input_node(0);
         auto s=inp->activations.shape.hmul();
@@ -639,9 +662,14 @@ void test_setup_convnet() {
     new Conv2d(&net,-1 , Int2(3,3), 32, 1);
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
-    new Conv2d(&net,-1 , Int2(3,3), 64, 1);
-    new ConcatZ(&net,-1,-2); // for densenets, shortcuts
     new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 128, 1);
+    new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 256, 1);
+    new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 512, 1);
+    new AvPool2x2(&net);
+
     new FlattenToZ(&net);
     new FullyConnected(&net,-1, 128);
     new FullyConnected(&net,-1, 32);
