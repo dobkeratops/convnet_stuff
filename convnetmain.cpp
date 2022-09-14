@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <map>
 #include <sys/stat.h>
 #include <vector>
 #include <array>
@@ -15,8 +16,9 @@
 cl_device_id g_cl_device=0;
 cl_context gcl=0;
 cl_command_queue gclq=0;
-
-#define TRACE printf("%s:%d %s\n",__FILE__,__LINE__,__FUNCTION__);
+#ifndef TRACE
+#define TRACE printf("%s:%d %s()\n",__FILE__,__LINE__,__FUNCTION__);
+#endif
 
 void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 	if (errcode==0) {return;}
@@ -48,9 +50,12 @@ void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 	#undef ERRCODE
 	printf("%s:%d\nopencl error %x\n%s\n",srcfile,line,errcode,msg?msg:"");
 }
+#ifndef CL_VERIFY
 #define CL_VERIFY(ERR) cl_verify(ERR, __FILE__, __LINE__, (const char*)0);
+#endif
 
 void opencl_init() {
+    TRACE
 	cl_uint num_devices, i;
 	clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
 
@@ -76,7 +81,6 @@ void opencl_init() {
 
 }
 
-#define MALLOCS(TYPE,NUM) ((TYPE*)malloc(sizeof(TYPE)*(NUM)))
 
 // does it work?
 
@@ -120,17 +124,20 @@ cl_mem cl_create_and_load_buffer(size_t elem_size,int num_elems,void* src_data) 
 // todo .. decide if we should just use std::array for this..
 struct Int2 {
     int x,y;Int2(){x=0;y=0;}Int2(int x,int y){this->x=x;this->y=y;}int hmul()const{return x*y;}
+    bool operator==(const Int2& other)const{return x==other.x&&y==other.y;}
     template<typename T>
     operator std::array<T,2>() const {return std::array<T,2>({(T)this->x,(T)this->y});}
 };
 struct Int3 {
     int x,y,z;Int3(){x=0;y=0,z=0;}Int3(int x,int y,int z){this->x=x;this->y=y;this->z=z;}int hmul()const{return x*y*z;}
+    bool operator==(const Int3& other)const{return x==other.x&&y==other.y&&z==other.z;}
     template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
     Int2 xy()const{return Int2(x,y);}
 };
 struct Int4 {
     int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
+    bool operator==(const Int4& other)const{return x==other.x&&y==other.y&&z==other.z&&w==other.w;}
     template<typename T>
     operator std::array<T,4>() const {return std::array<T,4>({(T)this->x,(T)this->y,(T)this->z,(T)this->w});}
     Int2 xy()const{return Int2(x,y);}
@@ -140,7 +147,7 @@ struct Int4 {
 template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"("<<src.x<<","<<src.y<<")";}
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
 
-template<typename T=float>
+template<typename T=float, const int INTERLEAVEZ=1>
 struct Buffer {
     Int4 shape=Int4(0,0,0,0);
     T* data=nullptr;
@@ -243,10 +250,13 @@ struct Program {
 
 struct Kernel {
     std::shared_ptr<Program> program;
-    cl_kernel kernel;
+    std::string name;
+    cl_kernel kernel=0;
     cl_int num_args=0;
     cl_int arg_set=0;
+    Kernel(){}
     Kernel(std::shared_ptr<Program>  prg, const char* entry) {
+        name=entry;
         assert(prg->prog);
         this->program=prg;
         cl_int ret;
@@ -355,20 +365,35 @@ struct Node;
 struct NeuralNet {
     friend Node;
     std::vector<Node*> nodes;
+    std::shared_ptr<Program> prg = std::make_shared<Program>("kernel.cl");
+    std::map<std::string,std::shared_ptr<Kernel>> used_kernels;
     
     void push_node(Node* n);
     ~NeuralNet() noexcept;
     void dump();
+    std::shared_ptr<Kernel> get_kernel(const char* entrypt) {
+        auto strname=std::string(entrypt);
+        if (used_kernels.contains(strname)) {
+            return used_kernels[strname];
+        } else {
+            std::shared_ptr<Kernel> ret=std::make_shared<Kernel>(this->prg,entrypt);
+            used_kernels.insert(std::make_pair(strname, ret));
+            return ret;
+        }
+    }
 };
 
 struct Node {
     friend NeuralNet;
     NeuralNet* net;
     Buffer<float> activations;
+    std::shared_ptr<Kernel> kernel;
     // todo: smallvector, node inptu counts are 0,1,2
+    const char* kernel_name() const{return kernel?kernel->name.c_str():"";}
     void dump_base() {
+        
         auto shape=this->activations.shape;
-        printf("node [%d]\ttype=%s\tshape=[%d %d %d %d]\n",this->index,this->name(), shape.x,shape.y,shape.z,shape.w);
+        printf("node [%d]\ttype=%s\tshape=[%d %d %d %d]\t%s()\n",this->index,this->name(), shape.x,shape.y,shape.z,shape.w, this->kernel_name());
         if (this->inputs.size()>0){
             if (this->inputs.size()==1) {printf("input=node[%d]\n",this->inputs[0]);}
             else {
@@ -379,6 +404,7 @@ struct Node {
                 printf("]\n");
             }
         }
+        
     }
     int channels() const{return activations.shape.z;}
     int width() const {return activations.shape.x;}
@@ -391,13 +417,17 @@ protected:
         activations.set_size(Int4(size.x,size.y,size.z,1));
     }
     virtual const char* name() const=0;
-    Node(NeuralNet* _net) {
+    Node(NeuralNet* _net, const char* kernel_entrypt) {
         this->net = _net;
         this->index=(nodeid)_net->nodes.size();
         this->net->nodes.push_back(this);
+        if (kernel_entrypt) {
+            
+            this->kernel = net->get_kernel(kernel_entrypt);
+        }
     }
-    Node(NeuralNet* net,nodeid _input) : Node(net){inputs.resize(1);inputs[0] = _input<0?index-1:_input;}    
-    Node(NeuralNet* net,nodeid src0,nodeid src1) : Node(net){inputs.resize(2);inputs[0] = src0<0?index-1:src0;inputs[1] = src1<0?index-1:src1;}
+    Node(NeuralNet* net, const char* entrypt,nodeid _input) : Node(net,entrypt){inputs.resize(1);inputs[0] = _input<0?this->index+_input:_input;}    
+    Node(NeuralNet* net,const char* entrypt,nodeid src0,nodeid src1) : Node(net,entrypt){inputs.resize(2);inputs[0] = src0<0?this->index+src0:src0;inputs[1] = src1<0?this->index+src1:src1;}
     Node* input_node(int i)const{return net->nodes[this->inputs[i]];}
     virtual ~Node();
     virtual void dump(){};
@@ -417,10 +447,6 @@ void NeuralNet::dump() {
     }
 }
 Node::~Node() {printf("destructing node %d\n",this->index);}
-struct NodeUnary : public Node{
-    
-    
-};
 class Conv2d : public Node{
     Buffer<float> filter;
     const char* name() const override{return "Conv2d";};
@@ -429,40 +455,78 @@ class Conv2d : public Node{
         printf("filter_shape=[%d %d %d %d]\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
     }
 public:    
-    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int stride=1) :Node(owner,_input){
+    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int stride=1) :Node(owner,"conv2d",_input){
         auto inp=input_node(0);
         int input_channels=inp->channels();
         this->set_size( Int3(inp->width()/stride,inp->height()/stride, _channels_out) );
         filter.set_size(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
+class Concat : public Node {
+    const char* name() const override{return "Concat";}
+public:
+    Concat(NeuralNet* owner, int src0, int src1) :Node(owner,"concat",src0,src1) {
+        auto in0=this->input_node(0),in1=this->input_node(1);
+        assert(in0->width()==in1->width() && in0->height()==in1->height());
+        this->set_size(Int3(in0->width(),in0->height(), in0->channels()+in1->channels()));
+    }
+};
+
+class Add : public Node {
+    const char* name() const override{return "Concat";}
+public:
+    Add(NeuralNet* owner, int src0, int src1) :Node(owner,"vector_add",src0,src1) {
+        auto in0=this->input_node(0),in1=this->input_node(1);
+        assert(in0->activations.shape==in1->activations.shape);
+        this->set_size(Int3(in0->width(),in0->height(), in0->channels()));
+    }
+};
+
 class AvPool2x2 : public Node {
     const char* name() const override{return "AvPool2x2";}
 public:
-    AvPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,_input){
+    AvPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,"avpool2x2",_input){
         auto inp=input_node(0);
         this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
     }
 };
+class MaxPool2x2 : public Node {
+    const char* name() const override{return "MaxPool2x2";}
+public:
+    MaxPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,"maxpool2x2",_input){
+        auto inp=input_node(0);
+        this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
+    }
+};
+
 class Expand2x2 : public Node {
     const char* name() const override{return "AvPool2x2";}
 public:
-    Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,_input){
+    Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,"expand2x2",_input){
         auto inp=input_node(0);
         this->set_size( Int3(inp->width()*2,inp->height()*2,inp->channels()));
     }
 };
+class FlattenToZ : public Node {
+    const char* name() const override{return "FlattenZ";}
+public:
+    FlattenToZ(NeuralNet* owner,int _input=-1) : Node(owner,"flatten_to_z",_input){
+        auto inp=input_node(0);
+        this->set_size( Int3(1,1, inp->width()*inp->height()*inp->channels(),1) )
+    }
+}
 
 class InputImage : Node{
     const char* name() const override{return "InputImage";};
     void dump() override {}
 public:
-    InputImage(NeuralNet* net, Int3 _size) : Node(net) {
+    InputImage(NeuralNet* net, Int3 _size) : Node(net,nullptr) {
         this->set_size(_size);
     }
 };
 
 void test_setup_convnet() {
+    TRACE
     NeuralNet net;
     new InputImage(&net, Int3(256,256,3));
     new Conv2d(&net,-1 , Int2(3,3), 16, 1);
@@ -470,7 +534,10 @@ void test_setup_convnet() {
     new Conv2d(&net,-1 , Int2(3,3), 32, 1);
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
+    new Conv2d(&net,-1 , Int2(3,3), 64, 1);
+    new Concat(&net,-1,-2);
     new AvPool2x2(&net);
+
     net.dump();
 }
 
@@ -478,6 +545,7 @@ void test_setup_convnet() {
 int SCREEN_HEIGHT = 800;
 int SCREEN_WIDTH = 600;
 void run_window_main_loop() {
+    TRACE
 	SDL_Event event;
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_Window *window = SDL_CreateWindow("SDL Game", 0, 0, 
