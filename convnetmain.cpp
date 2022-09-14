@@ -660,18 +660,21 @@ void test_setup_convnet() {
     NeuralNet net;
     new InputImage(&net, Int3(256,256,3));
     new Conv2d(&net,-1 , Int2(3,3), 16, 1);
+    
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 32, 1);
+    
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 128, 1);
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 256, 1);
+    
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 512, 1);// reduce it to make an image we can display
-    new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 3, 1);
+    //new AvPool2x2(&net);
+    //new Conv2d(&net,-1 , Int2(3,3), 3, 1);
     
 
 /*
