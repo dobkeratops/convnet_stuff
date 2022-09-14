@@ -23,32 +23,34 @@ cl_command_queue gclq=0;
 void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 	if (errcode==0) {return;}
 	const char* err="unknown error";
-	#define ERRCODE(X) case X: err=(const char*)#X; break;
+	#define ERRCODE(X) if (errcode==X) {err=(const char*)#X;}
 
-	switch (errcode) {
-		ERRCODE(CL_INVALID_PROGRAM_EXECUTABLE)
-		ERRCODE(CL_INVALID_COMMAND_QUEUE)
-		ERRCODE(CL_INVALID_KERNEL)
-		ERRCODE(CL_INVALID_CONTEXT)
-		ERRCODE(CL_INVALID_KERNEL_ARGS)
-		ERRCODE(CL_INVALID_WORK_DIMENSION)
-		ERRCODE(CL_INVALID_WORK_GROUP_SIZE)
-		ERRCODE(CL_INVALID_WORK_ITEM_SIZE)
-		ERRCODE(CL_INVALID_GLOBAL_OFFSET)
-		ERRCODE(CL_OUT_OF_RESOURCES)
-		ERRCODE(CL_MEM_OBJECT_ALLOCATION_FAILURE)
-		ERRCODE(CL_INVALID_EVENT_WAIT_LIST)
-		ERRCODE(CL_OUT_OF_HOST_MEMORY)
-		ERRCODE(CL_INVALID_VALUE)
-		ERRCODE(CL_INVALID_HOST_PTR)
-		ERRCODE(CL_INVALID_OPERATION)
-        ERRCODE(CL_INVALID_ARG_SIZE)
-		ERRCODE(CL_MEM_COPY_OVERLAP)
-		ERRCODE(CL_INVALID_MEM_OBJECT)
+
+    ERRCODE(CL_INVALID_PROGRAM_EXECUTABLE)
+    ERRCODE(CL_INVALID_COMMAND_QUEUE)
+    ERRCODE(CL_INVALID_KERNEL)
+    ERRCODE(CL_INVALID_CONTEXT)
+    ERRCODE(CL_INVALID_KERNEL_ARGS)
+    ERRCODE(CL_INVALID_KERNEL_NAME)
+    ERRCODE(CL_INVALID_KERNEL_DEFINITION)
+    ERRCODE(CL_INVALID_WORK_DIMENSION)
+    ERRCODE(CL_INVALID_WORK_GROUP_SIZE)
+    ERRCODE(CL_INVALID_WORK_ITEM_SIZE)
+    ERRCODE(CL_INVALID_GLOBAL_OFFSET)
+    ERRCODE(CL_OUT_OF_RESOURCES)
+    ERRCODE(CL_MEM_OBJECT_ALLOCATION_FAILURE)
+    ERRCODE(CL_INVALID_EVENT_WAIT_LIST)
+    ERRCODE(CL_OUT_OF_HOST_MEMORY)
+    ERRCODE(CL_INVALID_VALUE)
+    ERRCODE(CL_INVALID_HOST_PTR)
+    ERRCODE(CL_INVALID_OPERATION)
+    ERRCODE(CL_INVALID_ARG_SIZE)
+    ERRCODE(CL_MEM_COPY_OVERLAP)
+    ERRCODE(CL_INVALID_MEM_OBJECT)
+
 	
-	}
 	#undef ERRCODE
-	printf("%s:%d\nopencl error %x\n%s\n",srcfile,line,errcode,msg?msg:"");
+	printf("%s:%d\nopencl error %d\t%s\t%s\n",srcfile,line,errcode,err,msg?msg:"");
 }
 #ifndef CL_VERIFY
 #define CL_VERIFY(ERR) cl_verify(ERR, __FILE__, __LINE__, (const char*)0);
@@ -147,8 +149,11 @@ struct Int4 {
 template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"("<<src.x<<","<<src.y<<")";}
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"("<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<")";}
 
-template<typename T=float, const int INTERLEAVEZ=1>
+template<typename T=float, const int INTERLEAVEZ=1> 
 struct Buffer {
+    // TODO: try INTERLEAVEZ=4 for unrolling in kernels.
+    // layout [z&3][x][y][z/4][w]
+
     Int4 shape=Int4(0,0,0,0);
     T* data=nullptr;
     cl_mem device_buffer=0;
@@ -260,7 +265,7 @@ struct Kernel {
         assert(prg->prog);
         this->program=prg;
         cl_int ret;
-        this->kernel = clCreateKernel(prg->prog, entry, &ret);	CL_VERIFY(ret);
+        this->kernel = clCreateKernel(prg->prog, entry, &ret);	cl_verify(ret,__FILE__,__LINE__,entry);
         size_t sz;
         ret=clGetKernelInfo(this->kernel,CL_KERNEL_NUM_ARGS,sizeof(this->num_args),(void*)&this->num_args,&sz);
         
@@ -340,7 +345,7 @@ void opencl_test_basic() {
 	
     auto prg = std::make_shared<Program>("kernel.cl");
 	auto kernel=Kernel(prg,"vector_add_scaled");
-    kernel.set_args(buffer_a,buffer_b,buffer_c, 1000.0f, 1.0f);
+    kernel.set_args(buffer_c, buffer_a,buffer_b, 1000.0f, 1.0f);
 
     kernel.enqueue_range(testsize,64);
 	
@@ -406,6 +411,7 @@ struct Node {
         }
         
     }
+    virtual void set_extra_args(int basearg) {}
     int channels() const{return activations.shape.z;}
     int width() const {return activations.shape.x;}
     int height() const {return activations.shape.y;}
@@ -418,6 +424,7 @@ protected:
     }
     virtual const char* name() const=0;
     Node(NeuralNet* _net, const char* kernel_entrypt) {
+        assert(_net!=nullptr && "must create by passing a NeuralNet that will take ownership of this");
         this->net = _net;
         this->index=(nodeid)_net->nodes.size();
         this->net->nodes.push_back(this);
@@ -429,13 +436,16 @@ protected:
     Node(NeuralNet* net, const char* entrypt,nodeid _input) : Node(net,entrypt){inputs.resize(1);inputs[0] = _input<0?this->index+_input:_input;}    
     Node(NeuralNet* net,const char* entrypt,nodeid src0,nodeid src1) : Node(net,entrypt){inputs.resize(2);inputs[0] = src0<0?this->index+src0:src0;inputs[1] = src1<0?this->index+src1:src1;}
     Node* input_node(int i)const{return net->nodes[this->inputs[i]];}
+    void set_kernel_args();
     virtual ~Node();
     virtual void dump(){};
 };
 
 NeuralNet::~NeuralNet() noexcept{
+    printf("destructing neuralnet");
     for (auto x : this->nodes) {
         assert(x->net==this);
+        x->net=nullptr;
         delete x;
     }
 }
@@ -446,7 +456,15 @@ void NeuralNet::dump() {
         n->dump();
     }
 }
-Node::~Node() {printf("destructing node %d\n",this->index);}
+void Node::set_kernel_args(){
+    assert(this->kernel!=nullptr);
+    this->kernel->set_arg(0,this->activations);
+    for (int i=0; i<this->inputs.size(); i++) {
+        this->kernel->set_arg(i+1, this->input_node(i)->activations);
+    }
+    this->set_extra_args(this->inputs.size()+1);
+}
+Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
 class Conv2d : public Node{
     Buffer<float> filter;
     const char* name() const override{return "Conv2d";};
@@ -460,6 +478,18 @@ public:
         int input_channels=inp->channels();
         this->set_size( Int3(inp->width()/stride,inp->height()/stride, _channels_out) );
         filter.set_size(Int4(_size.x,_size.y, input_channels,_channels_out));
+    }
+};
+class FullyConnected : public Node {
+    Buffer<float> weights;
+    const char* name() const override{return "FullyConnected";};
+public:
+    FullyConnected(NeuralNet* owner, int _input, int _channels_out) : Node(owner,"matmul",_input) {
+        auto inp=input_node(0);
+        auto s=inp->activations.shape.hmul();
+        assert(s==inp->activations.shape.z && "input to fully connected layer must be flattened to Z, assumptions for interleave..");
+        this->weights.set_size(Int4(1,1, s, _channels_out));
+        this->set_size( Int3(1,1, _channels_out));
     }
 };
 class Concat : public Node {
@@ -490,6 +520,7 @@ public:
         this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
     }
 };
+
 class MaxPool2x2 : public Node {
     const char* name() const override{return "MaxPool2x2";}
 public:
@@ -512,9 +543,9 @@ class FlattenToZ : public Node {
 public:
     FlattenToZ(NeuralNet* owner,int _input=-1) : Node(owner,"flatten_to_z",_input){
         auto inp=input_node(0);
-        this->set_size( Int3(1,1, inp->width()*inp->height()*inp->channels(),1) )
+        this->set_size( Int3(1,1, inp->width()*inp->height()*inp->channels()) );
     }
-}
+};
 
 class InputImage : Node{
     const char* name() const override{return "InputImage";};
@@ -537,6 +568,8 @@ void test_setup_convnet() {
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
     new Concat(&net,-1,-2);
     new AvPool2x2(&net);
+    new FlattenToZ(&net);
+    new FullyConnected(&net,-1, 128);
 
     net.dump();
 }
@@ -579,7 +612,7 @@ int main() {
 	opencl_init();
 	opencl_test_basic();
     test_setup_convnet();
-    run_window_main_loop();
+    //run_window_main_loop();
 	opencl_shutdown();
 
 	return 0;
