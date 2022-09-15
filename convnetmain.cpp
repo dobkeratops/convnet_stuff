@@ -222,6 +222,31 @@ struct Buffer {
             this->to_device();
         }
     }
+    // image array interface. x,y = indexes width,height. 'z' is used for channels eg r,g,b  'w'=slices,layers.
+    // even when we move to interleaved channels, we will keep these index names.
+    template<int D> std::array<T,D> get_pixel(int x,int y, int layer=0) const{
+        assert(this->shape.z>=D);
+        assert(x<this->shape.x);
+        assert(y<this->shape.y);
+        std::array<T,D> ret;
+        for (int c=0; c<D; c++){
+            auto i= flatten_index(this->shape, Int4(x,y,c,layer));
+            if (i>=0 && i<this->data.size()){   
+                ret[c] =  this->data[i];
+            }
+            
+        }
+        return ret;
+    }
+    template<int D> void set_pixel(int x,int y, int layer, const std::array<T,D>& src) {
+        assert(this->shape.z==D);
+        for (int c=0; c<D; c++){
+            auto i= flatten_index(this->shape, Int4(x,y,c,layer));
+            this->data[i]=src[c];
+            
+        }
+    }
+
     void init_random(Int4 shape){this->set_size(shape, [](Int4 pos){return frands();});}
     Buffer() {}
     
@@ -257,9 +282,10 @@ struct Buffer {
         CL_VERIFY(ret);
     }
     // both linear and 4d indices
-    const T& operator[](int i) const{return this->data[i];}
-    T& operator[](int i){return this->data[i];}
+    //const T& operator[](int i) const{return this->data[i];}
+    //T& operator[](int i){return this->data[i];}
     T& operator[](Int4 pos){return this->data[flatten_index(shape,pos)];}
+    const T& operator[](Int4 pos) const{return this->data[flatten_index(shape,pos)];}
 };
 
 template<typename F,typename T>
@@ -276,7 +302,7 @@ F& operator<<(F& dst, const Buffer<T>& src) {
             
             dst<<"\t\t[";
             for (int i=0; i<num_to_show; i++) {
-                dst <<src[i+src.shape.x*(j+src.shape.y*(k+ src.shape.z*0))] << "\t";
+                dst <<src[Int4(i,j,k,0)] << "\t";
             }
             if (src.shape.x>num_to_show){dst<<"...";}
             dst<<"\t]\n";
@@ -848,8 +874,8 @@ void run_window_main_loop(std::function<void(SDL_Surface*,int frame)> generate_i
 }
 
 void scrolling_window_test(SDL_Surface* sfc,int frame){
-    for (int y=0; y<SCREEN_HEIGHT; y++) {
-        for (int x=0; x<SCREEN_WIDTH; x++){
+    for (int y=0; y<sfc->h; y++) {
+        for (int x=0; x<sfc->w; x++){
             auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
             pixel[0]=x-frame;
             pixel[1]=x+frame;
@@ -857,6 +883,7 @@ void scrolling_window_test(SDL_Surface* sfc,int frame){
         }
     }
 }
+
 void run_neural_net_test() {
     auto net = make_example_convnet();
     run_window_main_loop([&](auto sfc, auto frame) {
@@ -865,24 +892,27 @@ void run_neural_net_test() {
         Node* first=net->first_node();
         last->activations.from_device();
 
-        for (int y=0; y< SCREEN_HEIGHT; y++){
-            for (int x=0; x<SCREEN_HEIGHT; x++) {
+        
+        auto w= std::min(sfc->w,last->activations.shape.x);
+        auto h= std::min(sfc->h,last->activations.shape.y);
+        
+        for (int y=0; y< h; y++){
+            for (int x=0; x< w; x++) {
                 auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
 
-                float scale=0.01;
-                auto r=last->activations[Int4(x,y,0,0)];
-                auto g=last->activations[Int4(x,y,1,0)];
-                auto b=last->activations[Int4(x,y,2,0)];
-                pixel[0] = (uint8_t) (r*scale) ;
-                pixel[1] = (uint8_t) (g*scale) ;
-                pixel[2] = (uint8_t) (b*scale) ;
+                float scale=1.0/255.0;
+
+                std::array<float,3> src= last->activations.get_pixel<3>(x,y);
+                pixel[0] = (uint8_t) (src[0]*scale) ;
+                pixel[1] = (uint8_t) (src[1]*scale) ;
+                pixel[2] = (uint8_t) (src[2]*scale) ;
                 
             }
         }
+        
     });
-
-
 }
+
 
 int main() {
 
