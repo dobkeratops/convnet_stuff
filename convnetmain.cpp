@@ -11,7 +11,7 @@
 #include <OpenCL/opencl.h>
 
 #include "SDL2/SDL.h"
-//#include "SDL_image.h"
+#include "SDL_image.h"
 
 
 cl_device_id g_cl_device=0;
@@ -775,6 +775,14 @@ public:
     }
 };
 
+std::unique_ptr<NeuralNet> make_trivial_edgedetector_convnet() {
+    std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
+    NeuralNet* net=thenet.get();
+    new InputImage(net, Int3(256,256,3));
+    new Conv2d(net,-1 , Int2(3,3), 3, 1);
+    return thenet;
+}
+
 std::unique_ptr<NeuralNet> make_example_convnet() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
@@ -842,7 +850,7 @@ void test_setup_convnet() {
 }
 
 
-int SCREEN_HEIGHT = 512;
+int SCREEN_HEIGHT = 256;
 int SCREEN_WIDTH = 512;
 void run_window_main_loop(std::function<void(SDL_Surface*,int frame)> generate_image) {
     TRACE
@@ -884,44 +892,83 @@ void scrolling_window_test(SDL_Surface* sfc,int frame){
     }
 }
 
-void run_neural_net_test() {
-    auto net = make_example_convnet();
-    run_window_main_loop([&](auto sfc, auto frame) {
-        net->eval();
-        Node* last=net->last_node();
-        Node* first=net->first_node();
-        last->activations.from_device();
-
-        
-        auto w= std::min(sfc->w,last->activations.shape.x);
-        auto h= std::min(sfc->h,last->activations.shape.y);
-        
-        for (int y=0; y< h; y++){
-            for (int x=0; x< w; x++) {
-                auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
-
-                float scale=1.0/255.0;
-
-                std::array<float,3> src= last->activations.get_pixel<3>(x,y);
-                pixel[0] = (uint8_t) (src[0]*scale) ;
-                pixel[1] = (uint8_t) (src[1]*scale) ;
-                pixel[2] = (uint8_t) (src[2]*scale) ;
-                
+void fill_buffer_from_sdl_surface(Buffer<float>& buffer, SDL_Surface* src){
+    if (!src) return;
+    TRACE
+    int w=std::min(buffer.shape.x, src->w);
+    int h=std::min(buffer.shape.y, src->h);
+    int numc=std::min(buffer.shape.z,(int)src->format->
+        BytesPerPixel);
+    //SDL_LockSurface(src);
+    auto pixels=(uint8_t*)src->pixels;
+    for (int y=0; y<h; y++) {
+        for (int x=0; x<w; x++){
+            for (int z=0; z<numc; z++){
+                buffer.operator[](Int4(x,y,z,0)) = 
+                    (float)pixels[x*src->format->BytesPerPixel+y*src->pitch + z] * (1.0/255.0);
             }
         }
+    }
+    //SDL_UnlockSurface(src);
+    buffer.to_device();
+    TRACE
+}
+void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, Buffer<float>* src,float scale) {
+
+    if (!sfc) return;
+    w= std::min(std::min((int)(sfc->w-x0),w),(int)src->shape.x);
+    h= std::min(std::min((int)(sfc->h-y0),h),(int)src->shape.y);
+
+    for (int y=0; y< 256; y++){
+        for (int x=0; x< 256; x++) {
+            if (x<0 || x>=sfc->w || y<0 || y>=sfc->h) continue;
+            auto dstpixel=(((uint8_t*)sfc->pixels)+(x+x0)*sfc->format->BytesPerPixel+(y+y0) * sfc->pitch);
+
+            std::array<float,3> sp= src->get_pixel<3>(x,y);
+            dstpixel[0] = (uint8_t) (sp[0]*scale) ;
+            dstpixel[1] = (uint8_t) (sp[1]*scale) ;
+            dstpixel[2] = (uint8_t) (sp[2]*scale) ;
+            
+        }
+    }
+
+}
+void run_neural_net_test(SDL_Surface* input) {
+    auto net = make_trivial_edgedetector_convnet();
+
+    fill_buffer_from_sdl_surface(net->first_node()->activations, input);
+
+
+    run_window_main_loop([&](SDL_Surface* sfc, int frame) {
+        
+        net->eval();
+        
+        Node* last=net->last_node();
+        Node* first=net->first_node();
+        
+        last->activations.from_device();
+
+        copy_sdl_surface_from_buffer(sfc, 0,0,sfc->w/2,sfc->h, &first->activations,256.0);
+        copy_sdl_surface_from_buffer(sfc, sfc->w/2,0,sfc->w/2,sfc->h, &last->activations,1024.0);
         
     });
 }
 
 
-int main() {
-
+int main(int argc, const char** argv) {
+    SDL_Surface* input_image=nullptr;
+    if (argc>1) {
+        printf("loading image %s\n",argv[1]);
+        input_image=IMG_Load(argv[1]);
+    } else{
+        input_image=IMG_Load("01mame.png");
+    }
 
 	opencl_init();
 	opencl_test_basic();
     test_setup_convnet();
 //    run_window_main_loop(scrolling_window_test);
-    run_neural_net_test();
+    run_neural_net_test(input_image);
     
 	opencl_shutdown();
 
