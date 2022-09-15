@@ -529,7 +529,7 @@ void Node::eval() {
     this->set_extra_args((this->inputs.size()+1)*2);
     // todo - tweaking of localsize
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
-    auto grpsize=smallest_pot_below(Int3(4,4,4),this->activations.shape.xyz());
+    auto grpsize=smallest_pot_below(Int3(8,8,4),this->activations.shape.xyz());
     auto worksize=this->activations.shape.xyz()/this->output_stride;
     // 
     if (worksize.z% grpsize.z!=0) {
