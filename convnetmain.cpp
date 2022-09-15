@@ -57,6 +57,16 @@ void cl_verify(cl_int errcode, const char*srcfile ,int line,const char* msg){
 #define CL_VERIFY(ERR) cl_verify(ERR, __FILE__, __LINE__, (const char*)0);
 #endif
 
+struct ClDeviceInfo {
+    char extensions[2040];
+    char device_name[512]; //CL_DEVICE_NAME
+    char device_type[512];
+    cl_uint local_mem_size;
+    cl_ulong global_mem_cache_size;
+    size_t max_workgroup_size;//CL_DEVICE_MAX_WORK_GROUP_SIZE
+    size_t max_work_item_sizes[3];
+};
+ClDeviceInfo gDeviceInfo;
 void opencl_init() {
     TRACE
 	cl_uint num_devices, i;
@@ -77,6 +87,22 @@ void opencl_init() {
 	}
 
 	free(devices);
+
+     
+    size_t s;    
+    #define CL_GET_INFO(id,ITEM, str) clGetDeviceInfo(g_cl_device,id, sizeof(gDeviceInfo.ITEM),(void*)&gDeviceInfo.ITEM,&s); printf("\t%s=" str "\n", #ITEM, gDeviceInfo.ITEM);
+    CL_GET_INFO(CL_DEVICE_EXTENSIONS, extensions, "%s");
+    CL_GET_INFO(CL_DEVICE_NAME, device_name, "%s");
+    CL_GET_INFO(CL_DEVICE_TYPE,device_type, "%s");
+    CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%d");
+    
+    
+    CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%ul");
+    CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%d");
+    #undef CL_GET_INFO
+
+    clGetDeviceInfo(g_cl_device,CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(gDeviceInfo.max_work_item_sizes),(void*)&gDeviceInfo.max_work_item_sizes,&s);
+    for (int i=0; i<3; i++) {printf("max item dim[%d]=%ul\n", i,gDeviceInfo.max_work_item_sizes[i]);}
 
 	cl_int ret=0;
 	gcl = clCreateContext(NULL,1,&g_cl_device, NULL, NULL, &ret); CL_VERIFY(ret);
@@ -517,11 +543,29 @@ void Node::set_kernel_buffer_args(){
     // kernel custom args follow
     
 }
-Int3 smallest_pot_below(const Int3& a, const Int3& b){
-    auto ret=a;
-    while (ret.x>b.x){ret.x/=2;}
-    while (ret.y>b.y){ret.y/=2;}
-    while (ret.z>b.z){ret.z/=2;}
+bool can_inc_dim(int current, int max){
+    return (current*2 <=max) && (max %(current*2))==0;
+}
+Int3 get_workgroup_size_for(const Int3& worksize){
+    auto ret=Int3(1,1,1);
+    int maxsize=gDeviceInfo.max_workgroup_size;
+
+    while ((ret.hmul()*2)<= maxsize) {
+        bool can_inc_z= can_inc_dim(ret.z, worksize.z) ;
+        // try to increase width or height then depth
+        if (ret.x<ret.y && (ret.x<=ret.z || !can_inc_z) && can_inc_dim(ret.x, worksize.x)) {
+            ret.x*=2;
+        } else if ((ret.y<=ret.z  || !can_inc_z) && can_inc_dim(ret.y,worksize.y) ) {
+            ret.y*=2;
+        }
+        else if (can_inc_z){
+            ret.z*=2;
+        } else {
+            break;
+        }
+    }
+    
+    
     return ret;
 }
 void Node::eval() {
@@ -529,9 +573,9 @@ void Node::eval() {
     if (this->kernel==nullptr) {return;}
     this->set_kernel_buffer_args();
     this->set_extra_args((this->inputs.size()+1)*2);
-    // todo - tweaking of localsize
+    // todo - tweaking of ß
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
-    auto grpsize=smallest_pot_below(Int3(8,8,4),this->activations.shape.xyz());
+    auto grpsize=get_workgroup_size_for(this->activations.shape.xyz());
     auto worksize=this->activations.shape.xyz()/this->output_dilation;
     // 
     if (worksize.z% grpsize.z!=0) {

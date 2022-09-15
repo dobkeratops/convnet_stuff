@@ -1,3 +1,5 @@
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
 __kernel void vector_add( __global float *dst, __global const float *src0, __global const float *src1) {
     int i = get_global_id(0);					
     dst[i] = src0[i]+ src1[i];
@@ -210,6 +212,11 @@ __kernel void deconv_xy_2x_planar(
     int sx=get_global_id(0); // dest x
     int sy=get_global_id(1); // dest y
     int dst_channel=get_global_id(2); // dest channel
+
+    //int lx=get_local_id(0),ly=get_local_id(1);
+    //int lsizex=get_local_size(0), lsizey=get_local_size(1);
+
+
 
     int dx = sx*2;
     int dy = sy*2;
