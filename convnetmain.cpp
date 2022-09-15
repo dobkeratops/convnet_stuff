@@ -136,8 +136,10 @@ struct Int3 {
     bool operator==(const Int3& other)const{return x==other.x&&y==other.y&&z==other.z;}
     template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
-    auto operator/(const Int3& src){return Int3(x/src.x,y/src.y,z/src.z);}
-    auto operator*(const Int3& src){return Int3(x*src.x,y*src.y,z*src.z);}
+    auto operator/(const Int3& src)const {return Int3(x/src.x,y/src.y,z/src.z);}
+    auto operator*(const Int3& src)const {return Int3(x*src.x,y*src.y,z*src.z);}
+    auto operator+(const Int3& src)const {return Int3(x+src.x,y+src.y,z+src.z);}
+    auto operator-(const Int3& src)const {return Int3(x-src.x,y-src.y,z-src.z);}
     Int2 xy()const{return Int2(x,y);}
     Int3 min(const Int3& src)const{
         return Int3(std::min(x,src.x),std::min(y,src.y),std::min(z,src.z));
@@ -409,7 +411,7 @@ struct Node {
     NeuralNet* net;
     Buffer<float> activations;
     std::shared_ptr<Kernel> kernel;
-    Int3 output_stride=Int3(1,1,1);
+    Int3 output_dilation=Int3(1,1,1);
     // todo: smallvector, node inptu counts are 0,1,2
     const char* kernel_name() const{return kernel?kernel->name.c_str():"";}
     void dump_base() {
@@ -530,7 +532,7 @@ void Node::eval() {
     // todo - tweaking of localsize
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
     auto grpsize=smallest_pot_below(Int3(8,8,4),this->activations.shape.xyz());
-    auto worksize=this->activations.shape.xyz()/this->output_stride;
+    auto worksize=this->activations.shape.xyz()/this->output_dilation;
     // 
     if (worksize.z% grpsize.z!=0) {
         grpsize.z = worksize.z; // TODO better.
@@ -590,10 +592,11 @@ class DeconvXY2x : public Node{
 public:    
     DeconvXY2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_planar",_input), negfactor(_negf){
         assert((_filter_size.x&1)==0 && (_filter_size.y&1)==0 && "filter be multiple of 2");
+        assert(_filter_size.x==6 && "we use hardcoded 3xdilation2= 6x6 kernel optimized unrolled loop");
         auto inp=input_node(0);
         int input_channels=inp->channels();
-        this->set_size( Int3(inp->width()*2,inp->height()*2, _channels_out) );
-        this->output_stride=Int3(2,2,1);
+        this->output_dilation=Int3(2,2,1);
+        this->set_size( output_dilation*Int3(inp->width(),inp->height(), _channels_out) );
         filter.init_random(Int4(_filter_size.x,_filter_size.y, input_channels,_channels_out));
     }
 };
@@ -708,11 +711,18 @@ void test_setup_convnet() {
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
     
+    
     new AvPool2x2(&net);
+
     new Conv2d(&net,-1 , Int2(3,3), 96, 1);
+
     new AvPool2x2(&net);
+    
+
     new Conv2d(&net,-1 , Int2(3,3), 128, 1);
-    new AvPool2x2(&net);    
+
+    //new AvPool2x2(&net);    
+    new Conv2d(&net,-1 , Int2(3,3), 24, 2);
 
     new DeconvXY2x(&net,-1 , Int2(6,6), 64);
     new DeconvXY2x(&net,-1 , Int2(6,6), 32);
@@ -732,7 +742,7 @@ void test_setup_convnet() {
     net.dump();
     TRACE
     
-    int num_iter=100;
+    int num_iter=1000;
     printf("run %d iterations..\n",num_iter);
     for (int i=0; i<num_iter; i++) {
         net.eval();   
