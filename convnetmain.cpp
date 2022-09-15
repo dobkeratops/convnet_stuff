@@ -804,14 +804,14 @@ void test_setup_convnet() {
 }
 
 
-int SCREEN_HEIGHT = 800;
-int SCREEN_WIDTH = 600;
+int SCREEN_HEIGHT = 512;
+int SCREEN_WIDTH = 512;
 void run_window_main_loop(std::function<void(SDL_Surface*,int frame)> generate_image) {
     TRACE
 	SDL_Event event;
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_Window *window = SDL_CreateWindow("SDL window", 0, 0, 
-		SCREEN_HEIGHT, SCREEN_WIDTH, SDL_WINDOW_HIDDEN);
+		SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_HIDDEN);
 	SDL_ShowWindow(window);
     
     int frame=0;
