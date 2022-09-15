@@ -97,7 +97,7 @@ void opencl_init() {
     CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%d");
     
     
-    CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%ul");
+    CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%lu");
     CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%d");
     #undef CL_GET_INFO
 
@@ -651,7 +651,7 @@ class FullyConnected : public Node {
     Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
 public:
-    void estimate_cost(NeuralNet::Cost* c)const{
+    void estimate_cost(NeuralNet::Cost* c)const override{
         c->fmadds+=matrix_weights.shape.hmul();
         c->parameters+=matrix_weights.shape.hmul();
     }
@@ -786,7 +786,7 @@ void test_setup_convnet() {
     net.dump();
     TRACE
     
-    int num_iter=1000;
+    int num_iter=1;
     printf("run %d iterations..\n",num_iter);
     for (int i=0; i<num_iter; i++) {
         net.eval();   
@@ -806,14 +806,13 @@ void test_setup_convnet() {
 
 int SCREEN_HEIGHT = 800;
 int SCREEN_WIDTH = 600;
-void run_window_main_loop() {
+void run_window_main_loop(std::function<void(SDL_Surface*,int frame)> generate_image) {
     TRACE
 	SDL_Event event;
 	SDL_Init(SDL_INIT_VIDEO);
-	SDL_Window *window = SDL_CreateWindow("SDL Game", 0, 0, 
+	SDL_Window *window = SDL_CreateWindow("SDL window", 0, 0, 
 		SCREEN_HEIGHT, SCREEN_WIDTH, SDL_WINDOW_HIDDEN);
 	SDL_ShowWindow(window);
-    SDL_Renderer* rs=SDL_CreateRenderer(window,-1,0);
     
     int frame=0;
 	int running = 1;
@@ -824,15 +823,29 @@ void run_window_main_loop() {
 			}
 		}
         frame+=1;
-        SDL_SetRenderDrawColor(rs, frame&255, frame&1?128:0, 0, 255);
-
-        SDL_RenderClear(rs);
         
-        SDL_RenderPresent(rs);
+        SDL_Surface* sfc= SDL_GetWindowSurface(window);
+        SDL_LockSurface(sfc);
+        generate_image(sfc,frame);
+        SDL_UnlockSurface(sfc);
+        SDL_UpdateWindowSurface(window);
 
 	}
 	SDL_DestroyWindow(window);
 	SDL_Quit();
+}
+
+void run_scrolling_window_test(){
+    run_window_main_loop([](SDL_Surface* sfc,int frame){
+        for (int y=0; y<SCREEN_HEIGHT; y++) {
+            for (int x=0; x<SCREEN_WIDTH; x++){
+                auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
+                pixel[0]=x-frame;
+                pixel[1]=x+frame;
+                pixel[2]=y-frame;
+            }
+        }
+    });
 }
 
 int main() {
@@ -841,7 +854,7 @@ int main() {
 	opencl_init();
 	opencl_test_basic();
     test_setup_convnet();
-    //run_window_main_loop();
+    run_scrolling_window_test();
 	opencl_shutdown();
 
 	return 0;
