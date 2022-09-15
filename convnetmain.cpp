@@ -780,6 +780,11 @@ std::unique_ptr<NeuralNet> make_trivial_edgedetector_convnet() {
     NeuralNet* net=thenet.get();
     new InputImage(net, Int3(256,256,3));
     new Conv2d(net,-1 , Int2(3,3), 3, 1);
+    new AvPool2x2(net);
+    new Conv2d(net,-1 , Int2(3,3), 2, 1);
+    new AvPool2x2(net);
+    new DeconvXY2x(net,-1 , Int2(6,6), 2);
+    new DeconvXY2x(net,-1 , Int2(6,6), 3);
     return thenet;
 }
 
@@ -935,9 +940,9 @@ void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, 
 }
 void run_neural_net_test(SDL_Surface* input) {
     auto net = make_trivial_edgedetector_convnet();
+    
 
     fill_buffer_from_sdl_surface(net->first_node()->activations, input);
-
 
     run_window_main_loop([&](SDL_Surface* sfc, int frame) {
         
