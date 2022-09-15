@@ -104,20 +104,93 @@ __kernel void conv2d_planar(
 
     int layerofs = dst_channel * filter_shape.z;
     // requires shape0.z == shape1.z
+    // TODO - unrolling opt
+    int fi = filter_shape.x*filter_shape.y*filter_shape.z * dst_channel;
     for (int kz=0; kz<filter_shape.z; kz++) {
         
+        int si =lin_index(src_shape, sx,sy,kz);
         for (int ky=0; ky<filter_shape.y; ky++){
             
             for (int kx=0; kx<filter_shape.x; kx++) {
 
-                float s=get3df(src,src_shape,sx+kx, sy+ky, kz);
-                float f=get3df(filter, filter_shape, kx,ky,kz + layerofs);
+                //float s=get3df(src,src_shape,sx+kx, sy+ky, kz);
+                //float f=get3df(filter, filter_shape, kx,ky,kz + layerofs);
+                float s = src[si]; si+=1;
+                float f = filter[fi]; fi+=1;
                 sum+=s*f;
             }
+            si+= src_shape.x-filter_shape.x;
             
         }        
     }
     if (sum<0.0) {sum*=negfactor;}
 
     set3df(dst, dst_shape, ix,iy,dst_channel, sum);
+}
+
+__kernel void deconv_xy_2x_planar(
+        __global float* dst,                 // 3d array wdith,height, dstchannels
+        int4 dst_shape,
+        __global const float* src,  // 3d array width,height,srcchannels
+        int4 src_shape,
+        __global const float* filter, // 4D array, width,height,srcchannels,dstchannels
+        int4 filter_shape,
+        float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
+{
+    int sx=get_global_id(0); // dest x
+    int sy=get_global_id(1); // dest y
+    int dst_channel=get_global_id(2); // dest channel
+
+    int dx = sx*2;
+    int dy = sy*2;
+
+    float sum00=0.0;
+    float sum01=0.0;
+    float sum10=0.0;
+    float sum11=0.0;
+
+    int layerofs = dst_channel * filter_shape.z;
+    // requires shape0.z == shape1.z
+    // TODO - unrolling opt
+    for (int kz=0; kz<filter_shape.z; kz++) {
+        
+        for (int ky=0; ky<filter_shape.y; ky+=2){
+            
+            
+            //int si=lin_index(src_shape, sx,   sy+ky/2,   kz);
+            for (int kx=0; kx<filter_shape.x; kx+=2) {
+
+                // todo - 2x2 block read
+
+                float s=get3df(src,src_shape,sx+kx/2,   sy+ky/2,   kz);
+                //float f00=get3df(filter, filter_shape, kx,  ky,   kz + layerofs);
+                //float f01=get3df(filter, filter_shape, kx+1,ky,   kz + layerofs);
+                //float f10=get3df(filter, filter_shape, kx,  ky+1, kz + layerofs);
+                //float f11=get3df(filter, filter_shape, kx+1,ky+1, kz + layerofs);
+
+                int fi = lin_index(filter_shape,kx,ky,kz+layerofs);
+                float f00 =filter[fi];
+                float f01 =filter[fi+1];
+                float f10 =filter[fi + filter_shape.x];
+                float f11 =filter[fi+1 + filter_shape.x];
+
+                sum00+=s*f00;
+                sum01+=s*f01;
+                sum10+=s*f10;
+                sum11+=s*f11;
+            }
+            
+        }        
+    }
+    if (sum00<0.0) {sum00*=negfactor;}
+    if (sum01<0.0) {sum01*=negfactor;}
+    if (sum10<0.0) {sum10*=negfactor;}
+    if (sum11<0.0) {sum11*=negfactor;}
+
+    //todo 2x2 block write
+    set3df(dst, dst_shape, dx,  dy,  dst_channel, sum00);
+    set3df(dst, dst_shape, dx+1,dy,  dst_channel, sum01);
+    set3df(dst, dst_shape, dx,  dy+1,dst_channel, sum10);
+    set3df(dst, dst_shape, dx+1,dy+1,dst_channel, sum11);
+
 }

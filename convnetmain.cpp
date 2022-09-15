@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <map>
+#include <time.h>
 #include <sys/stat.h>
 #include <vector>
 #include <array>
@@ -135,6 +136,8 @@ struct Int3 {
     bool operator==(const Int3& other)const{return x==other.x&&y==other.y&&z==other.z;}
     template<typename T>    
     operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
+    auto operator/(const Int3& src){return Int3(x/src.x,y/src.y,z/src.z);}
+    auto operator*(const Int3& src){return Int3(x*src.x,y*src.y,z*src.z);}
     Int2 xy()const{return Int2(x,y);}
     Int3 min(const Int3& src)const{
         return Int3(std::min(x,src.x),std::min(y,src.y),std::min(z,src.z));
@@ -378,8 +381,9 @@ typedef int nodeid;
 struct Node;
 struct NeuralNet {
     friend Node;
-    struct Cost {int fmadds=0;int parameters=0; int activations=0;};
+    struct Cost {size_t fmadds=0;int parameters=0; int activations=0;};
     std::vector<Node*> nodes;
+    // todo propper singleton or whatever, global management
     std::shared_ptr<Program> prg = std::make_shared<Program>("kernel.cl");
     std::map<std::string,std::shared_ptr<Kernel>> used_kernels;
     Node* last_node(){assert(nodes.size()>0);return nodes[nodes.size()-1];}
@@ -405,6 +409,7 @@ struct Node {
     NeuralNet* net;
     Buffer<float> activations;
     std::shared_ptr<Kernel> kernel;
+    Int3 output_stride=Int3(1,1,1);
     // todo: smallvector, node inptu counts are 0,1,2
     const char* kernel_name() const{return kernel?kernel->name.c_str():"";}
     void dump_base() {
@@ -484,7 +489,7 @@ void NeuralNet::dump() {
     printf("],\n");
     auto tmp=this->estimate_cost();
     printf("\"cost\":{\n\t\"parameters\":%d\n",tmp.parameters);
-    printf("\t\"fmadds\":%d\n",tmp.fmadds);
+    printf("\t\"fmadds\":%lu\n",tmp.fmadds);
     printf("\t\"activations\":%d\n",tmp.activations);
     printf("\t}\n");
     printf("}\n");
@@ -518,20 +523,27 @@ Int3 smallest_pot_below(const Int3& a, const Int3& b){
     return ret;
 }
 void Node::eval() {
-    printf("eval node:%s{\n",this->name());
+    //printf("eval node:%s{\n",this->name());
     if (this->kernel==nullptr) {return;}
     this->set_kernel_buffer_args();
     this->set_extra_args((this->inputs.size()+1)*2);
     // todo - tweaking of localsize
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
     auto grpsize=smallest_pot_below(Int3(4,4,4),this->activations.shape.xyz());
-    std::cout<<grpsize<<" "<<this->activations.shape.xyz()<<"\n";
+    auto worksize=this->activations.shape.xyz()/this->output_stride;
+    // 
+    if (worksize.z% grpsize.z!=0) {
+        grpsize.z = worksize.z; // TODO better.
+    }
+
+    //std::cout<<grpsize<<" "<<this->activations.shape.xyz()<<"\n";
     
-    this->kernel->enqueue_range_3d( this->activations.shape.xyz(), grpsize);
-    printf("}\n");
+    this->kernel->enqueue_range_3d( worksize, grpsize);
+    //printf("}\n");
 }
 
 Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
+
 class Conv2d : public Node{
     Buffer<float> filter;
     const char* name() const override{return "Conv2d";};
@@ -549,7 +561,7 @@ class Conv2d : public Node{
     }
     void estimate_cost(NeuralNet::Cost* dst) const override {
         dst->parameters+=filter.shape.hmul();
-        dst->fmadds+=filter.shape.hmul() * activations.shape.x* activations.shape.y;
+        dst->fmadds+=(size_t)filter.shape.hmul() * (size_t)activations.shape.x* (size_t)activations.shape.y;
     }
 public:    
     Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_planar",_input), stride(_stride,_stride),negfactor(_negf){
@@ -559,6 +571,35 @@ public:
         filter.init_random(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
+class DeconvXY2x : public Node{
+    Buffer<float> filter;
+    const char* name() const override{return "DeconvXY2x";};
+    float negfactor=0.0f;
+    void dump_extra() override {
+        printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
+    }
+    void set_extra_args(int argid) override{
+        assert(argid==4);
+        this->kernel->set_arg_buffer_shape(argid,filter);
+        this->kernel->set_arg(argid+2, this->negfactor);
+    }
+    void estimate_cost(NeuralNet::Cost* dst) const override {
+        dst->parameters+=filter.shape.hmul();
+        dst->fmadds+=filter.shape.hmul() * activations.shape.x* activations.shape.y / 4;
+    }
+public:    
+    DeconvXY2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_planar",_input), negfactor(_negf){
+        assert((_filter_size.x&1)==0 && (_filter_size.y&1)==0 && "filter be multiple of 2");
+        auto inp=input_node(0);
+        int input_channels=inp->channels();
+        this->set_size( Int3(inp->width()*2,inp->height()*2, _channels_out) );
+        this->output_stride=Int3(2,2,1);
+        filter.init_random(Int4(_filter_size.x,_filter_size.y, input_channels,_channels_out));
+    }
+};
+
+
+
 class FullyConnected : public Node {
     Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
@@ -627,6 +668,7 @@ public:
     }
 };
 
+// hacky, probably not useful.
 class Expand2x2 : public Node {
     const char* name() const override{return "Expand2x2";}
 public:
@@ -635,6 +677,7 @@ public:
         this->set_size( Int3(inp->width()*2,inp->height()*2,inp->channels()));
     }
 };
+
 class FlattenToZ : public Node {
     const char* name() const override{return "FlattenToZ";}
 public:
@@ -659,23 +702,27 @@ void test_setup_convnet() {
     TRACE
     NeuralNet net;
     new InputImage(&net, Int3(256,256,3));
-    new Conv2d(&net,-1 , Int2(3,3), 16, 1);
     
-    new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 32, 1);
+    new Conv2d(&net,-1 , Int2(3,3), 24, 1);
     
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 64, 1);
+    
+    new AvPool2x2(&net);
+    new Conv2d(&net,-1 , Int2(3,3), 96, 1);
     new AvPool2x2(&net);
     new Conv2d(&net,-1 , Int2(3,3), 128, 1);
-    new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 256, 1);
-    
-    new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 512, 1);// reduce it to make an image we can display
-    //new AvPool2x2(&net);
-    //new Conv2d(&net,-1 , Int2(3,3), 3, 1);
-    
+    new AvPool2x2(&net);    
+
+    new DeconvXY2x(&net,-1 , Int2(6,6), 64);
+    new DeconvXY2x(&net,-1 , Int2(6,6), 32);
+    new DeconvXY2x(&net,-1 , Int2(6,6), 24);
+    new DeconvXY2x(&net,-1 , Int2(6,6), 16);
+    new DeconvXY2x(&net,-1 , Int2(6,6), 12);
+    new DeconvXY2x(&net,-1 , Int2(6,6), 3);
+
+    //new DeconvXY2x(&net,-1 , Int2(6,6), 3);
+
 
 /*
     new FlattenToZ(&net);
@@ -684,13 +731,21 @@ void test_setup_convnet() {
 */
     net.dump();
     TRACE
-    net.eval();
-    net.nodes[0]->activations.from_device();
-    std::cout<<net.nodes[0]->activations;
-
+    
+    int num_iter=100;
+    printf("run %d iterations..\n",num_iter);
+    for (int i=0; i<num_iter; i++) {
+        net.eval();   
+    }
     net.last_node()->activations.from_device();
-    std::cout<<"output:\n";
-    std::cout<<net.last_node()->activations;
+
+    std::cout<<"output:\n"; 
+    if (net.last_node()->activations.shape.hmul()<1024) {
+        
+        std::cout<<net.last_node()->activations;
+    } else {
+        std::cout<<"(too big to print..)\n"; 
+    }
     TRACE
 }
 
