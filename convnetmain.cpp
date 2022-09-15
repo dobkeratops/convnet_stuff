@@ -98,11 +98,11 @@ void opencl_init() {
     
     
     CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%lu");
-    CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%d");
+    CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%lu");
     #undef CL_GET_INFO
 
     clGetDeviceInfo(g_cl_device,CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(gDeviceInfo.max_work_item_sizes),(void*)&gDeviceInfo.max_work_item_sizes,&s);
-    for (int i=0; i<3; i++) {printf("max item dim[%d]=%ul\n", i,gDeviceInfo.max_work_item_sizes[i]);}
+    for (int i=0; i<3; i++) {printf("max item dim[%d]=%lul\n", i,gDeviceInfo.max_work_item_sizes[i]);}
 
 	cl_int ret=0;
 	gcl = clCreateContext(NULL,1,&g_cl_device, NULL, NULL, &ret); CL_VERIFY(ret);
@@ -415,6 +415,7 @@ struct NeuralNet {
     std::shared_ptr<Program> prg = std::make_shared<Program>("kernel.cl");
     std::map<std::string,std::shared_ptr<Kernel>> used_kernels;
     Node* last_node(){assert(nodes.size()>0);return nodes[nodes.size()-1];}
+    Node* first_node(){assert(nodes.size()>0);return nodes[0];}
     void push_node(Node* n);
     ~NeuralNet() noexcept;
     void dump();
@@ -617,6 +618,8 @@ public:
         filter.init_random(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
+
+//todo rename DILATED convolution.
 class DeconvXY2x : public Node{
     Buffer<float> filter;
     const char* name() const override{return "DeconvXY2x";};
@@ -634,6 +637,7 @@ class DeconvXY2x : public Node{
         dst->fmadds+=filter.shape.hmul() * activations.shape.x* activations.shape.y / 4;
     }
 public:    
+
     DeconvXY2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_planar",_input), negfactor(_negf){
         assert((_filter_size.x&1)==0 && (_filter_size.y&1)==0 && "filter be multiple of 2");
         assert(_filter_size.x==6 && "we use hardcoded 3xdilation2= 6x6 kernel optimized unrolled loop");
@@ -745,35 +749,43 @@ public:
     }
 };
 
-void test_setup_convnet() {
-    TRACE
-    NeuralNet net;
-    new InputImage(&net, Int3(256,256,3));
-    
-    new Conv2d(&net,-1 , Int2(3,3), 24, 1);
-    
-    new AvPool2x2(&net);
-    new Conv2d(&net,-1 , Int2(3,3), 64, 1);
-    
-    
-    new AvPool2x2(&net);
+std::unique_ptr<NeuralNet> make_example_convnet() {
+    std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
+    NeuralNet* net=thenet.get();
 
-    new Conv2d(&net,-1 , Int2(3,3), 96, 1);
+    new InputImage(net, Int3(256,256,3));
+    
+    new Conv2d(net,-1 , Int2(3,3), 24, 1);
+    
+    new AvPool2x2(net);
+    new Conv2d(net,-1 , Int2(3,3), 64, 1);
+    
+    
+    new AvPool2x2(net);
 
-    new AvPool2x2(&net);
+    new Conv2d(net,-1 , Int2(3,3), 96, 1);
+
+    new AvPool2x2(net);
     
 
-    new Conv2d(&net,-1 , Int2(3,3), 128, 1);
+    new Conv2d(net,-1 , Int2(3,3), 128, 1);
 
     //new AvPool2x2(&net);    
-    new Conv2d(&net,-1 , Int2(3,3), 24, 2);
+    new Conv2d(net,-1 , Int2(3,3), 24, 2);
 
-    new DeconvXY2x(&net,-1 , Int2(6,6), 64);
-    new DeconvXY2x(&net,-1 , Int2(6,6), 32);
-    new DeconvXY2x(&net,-1 , Int2(6,6), 24);
-    new DeconvXY2x(&net,-1 , Int2(6,6), 16);
-    new DeconvXY2x(&net,-1 , Int2(6,6), 12);
-    new DeconvXY2x(&net,-1 , Int2(6,6), 3);
+    new DeconvXY2x(net,-1 , Int2(6,6), 64);
+    new DeconvXY2x(net,-1 , Int2(6,6), 32);
+    new DeconvXY2x(net,-1 , Int2(6,6), 24);
+    new DeconvXY2x(net,-1 , Int2(6,6), 16);
+    new DeconvXY2x(net,-1 , Int2(6,6), 12);
+    new DeconvXY2x(net,-1 , Int2(6,6), 3);
+
+    return thenet;
+}
+
+void test_setup_convnet() {
+    TRACE
+    auto net = make_example_convnet();
 
     //new DeconvXY2x(&net,-1 , Int2(6,6), 3);
 
@@ -783,20 +795,20 @@ void test_setup_convnet() {
     new FullyConnected(&net,-1, 128);
     new FullyConnected(&net,-1, 32);
 */
-    net.dump();
+    net->dump();
     TRACE
     
     int num_iter=1;
     printf("run %d iterations..\n",num_iter);
     for (int i=0; i<num_iter; i++) {
-        net.eval();   
+        net->eval();   
     }
-    net.last_node()->activations.from_device();
+    net->last_node()->activations.from_device();
 
     std::cout<<"output:\n"; 
-    if (net.last_node()->activations.shape.hmul()<1024) {
+    if (net->last_node()->activations.shape.hmul()<1024) {
         
-        std::cout<<net.last_node()->activations;
+        std::cout<<net->last_node()->activations;
     } else {
         std::cout<<"(too big to print..)\n"; 
     }
@@ -835,17 +847,41 @@ void run_window_main_loop(std::function<void(SDL_Surface*,int frame)> generate_i
 	SDL_Quit();
 }
 
-void run_scrolling_window_test(){
-    run_window_main_loop([](SDL_Surface* sfc,int frame){
-        for (int y=0; y<SCREEN_HEIGHT; y++) {
-            for (int x=0; x<SCREEN_WIDTH; x++){
+void scrolling_window_test(SDL_Surface* sfc,int frame){
+    for (int y=0; y<SCREEN_HEIGHT; y++) {
+        for (int x=0; x<SCREEN_WIDTH; x++){
+            auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
+            pixel[0]=x-frame;
+            pixel[1]=x+frame;
+            pixel[2]=y-frame;
+        }
+    }
+}
+void run_neural_net_test() {
+    auto net = make_example_convnet();
+    run_window_main_loop([&](auto sfc, auto frame) {
+        net->eval();
+        Node* last=net->last_node();
+        Node* first=net->first_node();
+        last->activations.from_device();
+
+        for (int y=0; y< SCREEN_HEIGHT; y++){
+            for (int x=0; x<SCREEN_HEIGHT; x++) {
                 auto pixel=(((uint8_t*)sfc->pixels)+x*sfc->format->BytesPerPixel+y * sfc->pitch);
-                pixel[0]=x-frame;
-                pixel[1]=x+frame;
-                pixel[2]=y-frame;
+
+                float scale=0.01;
+                auto r=last->activations[Int4(x,y,0,0)];
+                auto g=last->activations[Int4(x,y,1,0)];
+                auto b=last->activations[Int4(x,y,2,0)];
+                pixel[0] = (uint8_t) (r*scale) ;
+                pixel[1] = (uint8_t) (g*scale) ;
+                pixel[2] = (uint8_t) (b*scale) ;
+                
             }
         }
     });
+
+
 }
 
 int main() {
@@ -854,7 +890,9 @@ int main() {
 	opencl_init();
 	opencl_test_basic();
     test_setup_convnet();
-    run_scrolling_window_test();
+//    run_window_main_loop(scrolling_window_test);
+    run_neural_net_test();
+    
 	opencl_shutdown();
 
 	return 0;
