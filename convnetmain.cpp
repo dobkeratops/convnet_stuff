@@ -279,7 +279,9 @@ struct Buffer {
         }
     }
     inline size_t flatten_index(const Int4& pos) const {
-        return pos.z + shape.z*(pos.x + shape.x*(pos.y+ shape.y*pos.w));
+        auto p=pos+this->padding;
+        auto shapepadded =shape + this->padding*2;
+        return p.z + shapepadded.z*(p.x +shapepadded.x*(p.y+ shapepadded.y*p.w));
     }
 
     void init_random(Int4 shape){this->set_size(shape, [](Int4 pos){return frands();});}
