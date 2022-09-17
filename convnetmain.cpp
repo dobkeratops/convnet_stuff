@@ -94,7 +94,7 @@ void opencl_init() {
     CL_GET_INFO(CL_DEVICE_EXTENSIONS, extensions, "%s");
     CL_GET_INFO(CL_DEVICE_NAME, device_name, "%s");
     CL_GET_INFO(CL_DEVICE_TYPE,device_type, "%s");
-    CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%d");
+    CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%lu8");
     
    
     CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%lu");
@@ -160,35 +160,59 @@ cl_mem cl_create_and_load_buffer(size_t elem_size,int num_elems,void* src_data) 
 }
 
 // todo .. decide if we should just use std::array for this..
-struct Int2 {
-    int x,y;Int2(){x=0;y=0;}Int2(int x,int y){this->x=x;this->y=y;}int hmul()const{return x*y;}
-    bool operator==(const Int2& other)const{return x==other.x&&y==other.y;}
-    template<typename T>
-    operator std::array<T,2>() const {return std::array<T,2>({(T)this->x,(T)this->y});}
+template<typename T>
+struct Vec2 {
+    T x,y;
+    Vec2(){x=0;y=0;}
+    Vec2(T x,T y){this->x=x;this->y=y;}
+    int hmul()const{return x*y;}
+    bool operator==(const Vec2& other)const{return x==other.x&&y==other.y;}
+    template<typename B>
+    operator std::array<B,2>() const {return std::array<B,2>({(B)this->x,(B)this->y});}
 };
-struct Int3 {
-    int x,y,z;Int3(){x=0;y=0,z=0;}Int3(int x,int y,int z){this->x=x;this->y=y;this->z=z;}int hmul()const{return x*y*z;}
-    bool operator==(const Int3& other)const{return x==other.x&&y==other.y&&z==other.z;}
-    template<typename T>    
-    operator std::array<T,3>() const {return std::array<T,3>({(T)this->x,(T)this->y,(T)this->z});}
-    auto operator/(const Int3& src)const {return Int3(x/src.x,y/src.y,z/src.z);}
-    auto operator*(const Int3& src)const {return Int3(x*src.x,y*src.y,z*src.z);}
-    auto operator+(const Int3& src)const {return Int3(x+src.x,y+src.y,z+src.z);}
-    auto operator-(const Int3& src)const {return Int3(x-src.x,y-src.y,z-src.z);}
-    Int2 xy()const{return Int2(x,y);}
-    Int3 min(const Int3& src)const{
-        return Int3(std::min(x,src.x),std::min(y,src.y),std::min(z,src.z));
+template<typename T>
+struct Vec3 {
+    T x,y,z;
+    Vec3(){x=0;y=0,z=0;}
+    Vec3(T x,T y,T z){this->x=x;this->y=y;this->z=z;}
+    T hmul()const{return x*y*z;}
+    bool operator==(const Vec3& other)const{return x==other.x&&y==other.y&&z==other.z;}
+    template<typename B>    
+    operator std::array<B,3>() const {return std::array<B,3>({(B)this->x,(B)this->y,(B)this->z});}
+    auto operator/(const Vec3& src)const {return Vec3(x/src.x,y/src.y,z/src.z);}
+    auto operator*(const Vec3& src)const {return Vec3(x*src.x,y*src.y,z*src.z);}
+    auto operator*(const T& src)const {return Vec3(x*src,y*src,z*src);}
+    auto operator/(const T& src)const {return Vec3(x/src,y/src,z/src);}
+    auto operator+(const Vec3& src)const {return Vec3(x+src.x,y+src.y,z+src.z);}
+    auto operator-(const Vec3& src)const {return Vec3(x-src.x,y-src.y,z-src.z);}
+    auto xy()const{return Vec2(x,y);}
+    auto min(const Vec3& src)const{
+        return VEc3(std::min(x,src.x),std::min(y,src.y),std::min(z,src.z));
     }
 };
 
-struct Int4 {
-    int x,y,z,w;    Int4(){x=0;y=0;z=0;w=0;}    Int4(int x,int y,int z,int w){this->x=x;this->y=y;this->z=z;this->w=w;} int hmul()const{return x*y*z*w;}
-    bool operator==(const Int4& other)const{return x==other.x&&y==other.y&&z==other.z&&w==other.w;}
-    template<typename T>
-    operator std::array<T,4>() const {return std::array<T,4>({(T)this->x,(T)this->y,(T)this->z,(T)this->w});}
-    Int2 xy()const{return Int2(x,y);}
-    Int3 xyz()const{return Int3(x,y,z);}
+template<typename T>
+struct Vec4 {
+    T x,y,z,w;
+    Vec4(){x=0;y=0;z=0;w=0;}   
+    Vec4(T x,T y,T z,T w){this->x=x;this->y=y;this->z=z;this->w=w;}
+    T hmul()const{return x*y*z*w;}
+    bool operator==(const Vec4& other)const{return x==other.x&&y==other.y&&z==other.z&&w==other.w;}
+    template<typename B>
+    operator std::array<B,4>() const {return std::array<B,4>({(B)this->x,(B)this->y,(B)this->z,(B)this->w});}
+    auto operator/(const Vec4& src)const {return Vec4(x/src.x,y/src.y,z/src.z,w/src.w);}
+    auto operator*(const Vec4& src)const {return Vec4(x*src.x,y*src.y,z*src.z,w*src.w);}
+    auto operator*(const T& src)const {return Vec4(x*src,y*src,z*src,w*src);}
+    auto operator/(const T& src)const {return Vec4(x/src,y/src,z/src,w/src);}
+    auto operator+(const Vec4& src)const {return Vec4(x+src.x,y+src.y,z+src.z,w+src.w);}
+    auto operator-(const Vec4& src)const {return Vec4(x-src.x,y-src.y,z-src.z,w-src.w);}
+
+    auto xy()const{return Vec2(x,y);}
+    auto xyz()const{return Vec3(x,y,z);}
 };
+typedef Vec2<int32_t> Int2;
+typedef Vec3<int32_t> Int3;
+typedef Vec4<int32_t> Int4;
 
 template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"["<<src.x<<","<<src.y<<"]";}
 template<typename T> T& operator<<(T& dst, const Int3& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<"]";}
@@ -201,7 +225,7 @@ struct Buffer {
     // layout [z&3][x][y][z/4][w]
 
     Int4 shape=Int4(0,0,0,0);
-    Int3 padding=Int3(0,0,0,0);   // so our filters can overstep.
+    Int4 padding=Int4(0,0,0,0);   // so our filters can overstep.
 
     std::vector<T> data;
     cl_mem device_buffer=0;
@@ -222,7 +246,7 @@ struct Buffer {
         this->shape=shape;
         std::cout<<"creating buffer: ["<<this->shape<<"\n";
         
-        this->data.resize(total_elems());
+        this->data.resize(total_elems_padded());
         cl_int ret;
         this->device_buffer =clCreateBuffer(gcl, mode, this->total_bytes() , NULL, &ret); CL_VERIFY(ret);
         this->generate_with(generate_f);
@@ -283,8 +307,8 @@ struct Buffer {
         }
     }
     
-    size_t total_elems() const{return shape.hmul();}
-    size_t total_bytes() const{return total_elems()*sizeof(T);}
+    size_t total_elems_padded() const{return (shape+padding*2).hmul();}
+    size_t total_bytes() const{return total_elems_padded()*sizeof(T);}
     void to_device() {
         auto ret=clEnqueueWriteBuffer(gclq, this->device_buffer, CL_TRUE,0, this->total_bytes(), (void*) &this->data[0], 0, NULL,NULL); CL_VERIFY(ret);
     }
