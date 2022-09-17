@@ -201,6 +201,8 @@ struct Buffer {
     // layout [z&3][x][y][z/4][w]
 
     Int4 shape=Int4(0,0,0,0);
+    Int3 padding=Int3(0,0,0,0);   // so our filters can overstep.
+
     std::vector<T> data;
     cl_mem device_buffer=0;
     void generate_with(std::function<T(Int4)> genf) {
