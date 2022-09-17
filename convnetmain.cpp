@@ -96,10 +96,19 @@ void opencl_init() {
     CL_GET_INFO(CL_DEVICE_TYPE,device_type, "%s");
     CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%d");
     
-    
+   
     CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%lu");
     CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%lu");
     #undef CL_GET_INFO
+
+    {
+        int val; size_t rets=0;
+        
+        clGetDeviceInfo(g_cl_device, CL_DEVICE_HALF_FP_CONFIG, sizeof(val),(void*)&val,&rets);   
+        printf("half float=%d %lu\n",val,rets);
+
+        int half;
+    }
 
     clGetDeviceInfo(g_cl_device,CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(gDeviceInfo.max_work_item_sizes),(void*)&gDeviceInfo.max_work_item_sizes,&s);
     for (int i=0; i<3; i++) {printf("max item dim[%d]=%lul\n", i,gDeviceInfo.max_work_item_sizes[i]);}
@@ -180,16 +189,13 @@ struct Int4 {
     Int2 xy()const{return Int2(x,y);}
     Int3 xyz()const{return Int3(x,y,z);}
 };
-inline size_t flatten_index(const Int4& shape, const Int4& pos) {
-    return pos.x + shape.x*(pos.y + shape.y*(pos.z+ shape.z*pos.w));
-}
 
 template<typename T> T& operator<<(T& dst, const Int2& src){return dst<<"["<<src.x<<","<<src.y<<"]";}
 template<typename T> T& operator<<(T& dst, const Int3& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<"]";}
 template<typename T> T& operator<<(T& dst, const Int4& src){return dst<<"["<<src.x<<","<<src.y<<","<<src.z<<","<<src.w<<"]";}
 
 float frands(){ int x=rand();return  (1.0/(float)0x8000)*(float)((x&0xffff)-0x8000);}
-template<typename T=float, const int INTERLEAVEZ=1> 
+template<typename T=float> 
 struct Buffer {
     // TODO: try INTERLEAVEZ=4 for unrolling in kernels?
     // layout [z&3][x][y][z/4][w]
@@ -230,7 +236,7 @@ struct Buffer {
         assert(y<this->shape.y);
         std::array<T,D> ret;
         for (int c=0; c<D; c++){
-            auto i= flatten_index(this->shape, Int4(x,y,c,layer));
+            auto i= flatten_index(Int4(x,y,c,layer));
             if (i>=0 && i<this->data.size()){   
                 ret[c] =  this->data[i];
             }
@@ -246,6 +252,9 @@ struct Buffer {
             
         }
     }
+    inline size_t flatten_index(const Int4& pos) const {
+        return pos.z + shape.z*(pos.x + shape.x*(pos.y+ shape.y*pos.w));
+    }
 
     void init_random(Int4 shape){this->set_size(shape, [](Int4 pos){return frands();});}
     Buffer() {}
@@ -256,7 +265,7 @@ struct Buffer {
     Buffer(Int4 shape, const T* src, cl_int mode=CL_MEM_READ_WRITE) 
         : Buffer(shape, 
             [&](Int4 pos){
-                return src[flatten_index(shape,pos)];},mode)
+                return src[this->flatten_index(shape,pos)];},mode)
     {    
     }
     Buffer(Buffer<T>&& src) {
@@ -284,8 +293,8 @@ struct Buffer {
     // both linear and 4d indices
     //const T& operator[](int i) const{return this->data[i];}
     //T& operator[](int i){return this->data[i];}
-    T& operator[](Int4 pos){return this->data[flatten_index(shape,pos)];}
-    const T& operator[](Int4 pos) const{return this->data[flatten_index(shape,pos)];}
+    T& operator[](Int4 pos){return this->data[this->flatten_index(pos)];}
+    const T& operator[](Int4 pos) const{return this->data[this->flatten_index(pos)];}
 };
 
 template<typename F,typename T>
@@ -368,6 +377,10 @@ struct Kernel {
         auto localsize=(std::array<size_t,3>)_localsize;
         verify_args();
         auto ret=clEnqueueNDRangeKernel(gclq, this->kernel, 3, NULL, &globalsize[0],&localsize[0], 0, NULL,NULL); CL_VERIFY(ret);
+        if (ret ==CL_INVALID_WORK_GROUP_SIZE) {
+            std::cout<<_globalsize <<" "<<_localsize<<"\n";
+            exit(0);
+        }
     }
 
     template<typename T>
@@ -432,8 +445,9 @@ void opencl_shutdown() {
 
 typedef int nodeid;
 
-struct Node;
+
 struct NeuralNet {
+    struct Node;
     friend Node;
     struct Cost {size_t fmadds=0;int parameters=0; int activations=0;};
     std::vector<Node*> nodes;
@@ -459,15 +473,16 @@ struct NeuralNet {
     void eval();
 };
 
-struct Node {
+struct NeuralNet::Node {
     friend NeuralNet;
-    NeuralNet* net;
+    NeuralNet* net=nullptr;
     Buffer<float> activations;
     std::shared_ptr<Kernel> kernel;
     Int3 output_dilation=Int3(1,1,1);
+    
     // todo: smallvector, node inptu counts are 0,1,2
     const char* kernel_name() const{return kernel?kernel->name.c_str():"";}
-    void dump_base() {
+    void dump_base() const {
         
         auto shape=this->activations.shape;
         printf("\t\t\"index\":%d,\t\"type\":\"%s\",\t\"shape\":[%d,%d,%d,%d],\t\"function\":\"%s\",\n",
@@ -543,22 +558,26 @@ void NeuralNet::dump() {
     }
     printf("],\n");
     auto tmp=this->estimate_cost();
-    printf("\"cost\":{\n\t\"parameters\":%d\n",tmp.parameters);
-    printf("\t\"fmadds\":%lu\n",tmp.fmadds);
-    printf("\t\"activations\":%d\n",tmp.activations);
+    printf("\"cost\":{\n\t\"parameters\":%de6\n",tmp.parameters/1000000);
+    printf("\t\"fmadds\":%lue9\n",tmp.fmadds/1000000000);
+    printf("\t\"activations\":%de6\n",tmp.activations/1000000);
     printf("\t}\n");
     printf("}\n");
 }
 void NeuralNet::eval() {
+    
     for (auto& node : this->nodes) {
         for (auto& x:node->inputs){
             assert(x < node->index && "directed node graph, sources must preceed dests");
         }
         node->eval();
     }
+    
+
+
 }
 
-void Node::set_kernel_buffer_args(){
+void NeuralNet::Node::set_kernel_buffer_args(){
     assert(this->kernel!=nullptr);
     // conventoin expected by kernel code: first arg is destination
     // alternate buffer and shape data
@@ -571,7 +590,7 @@ void Node::set_kernel_buffer_args(){
     
 }
 bool can_inc_dim(int current, int max){
-    return (current*2 <=max) && (max %(current*2))==0;
+    return ((current*2) <=max) && (max %(current*2))==0;
 }
 Int3 get_workgroup_size_for(const Int3& worksize){
     auto ret=Int3(1,1,1);
@@ -591,19 +610,20 @@ Int3 get_workgroup_size_for(const Int3& worksize){
             break;
         }
     }
-    
+
     
     return ret;
 }
-void Node::eval() {
+void NeuralNet::Node::eval() {
     //printf("eval node:%s{\n",this->name());
     if (this->kernel==nullptr) {return;}
     this->set_kernel_buffer_args();
     this->set_extra_args((this->inputs.size()+1)*2);
     // todo - tweaking of ß
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
-    auto grpsize=get_workgroup_size_for(this->activations.shape.xyz());
+    
     auto worksize=this->activations.shape.xyz()/this->output_dilation;
+    auto grpsize=get_workgroup_size_for(worksize);
     // 
     if (worksize.z% grpsize.z!=0) {
         grpsize.z = worksize.z; // TODO better.
@@ -615,12 +635,13 @@ void Node::eval() {
     //printf("}\n");
 }
 
-Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
+NeuralNet::Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
 
-class Conv2d : public Node{
+class Conv2d : public NeuralNet::Node{
     Buffer<float> filter;
     const char* name() const override{return "Conv2d";};
-    Int2 stride;
+    Int2 stride=Int2(1,1);
+    
     float negfactor=0.0f;
 
     void dump_extra() override {
@@ -637,18 +658,22 @@ class Conv2d : public Node{
         dst->fmadds+=(size_t)filter.shape.hmul() * (size_t)activations.shape.x* (size_t)activations.shape.y;
     }
 public:    
-    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_planar",_input), stride(_stride,_stride),negfactor(_negf){
+    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_nhwc",_input), stride(_stride,_stride),negfactor(_negf){
+        
         auto inp=input_node(0);
         int input_channels=inp->channels();
+        assert(
+            (input_channels &3)==0 && 
+            (_channels_out&3)==0 && "channel sizes must be multiple of 4, use RGBA etc.");
         this->set_size( Int3(inp->width()/stride.x,inp->height()/stride.y, _channels_out) );
         filter.init_random(Int4(_size.x,_size.y, input_channels,_channels_out));
     }
 };
 
 //todo rename DILATED convolution.
-class DeconvXY2x : public Node{
+class ConvDilated2x : public NeuralNet::Node{
     Buffer<float> filter;
-    const char* name() const override{return "DeconvXY2x";};
+    const char* name() const override{return "ConvDilated2x";};
     float negfactor=0.0f;
     void dump_extra() override {
         printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
@@ -664,11 +689,12 @@ class DeconvXY2x : public Node{
     }
 public:    
 
-    DeconvXY2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_planar",_input), negfactor(_negf){
+    ConvDilated2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_nhwc",_input), negfactor(_negf){
         assert((_filter_size.x&1)==0 && (_filter_size.y&1)==0 && "filter be multiple of 2");
         assert(_filter_size.x==6 && "we use hardcoded 3xdilation2= 6x6 kernel optimized unrolled loop");
         auto inp=input_node(0);
         int input_channels=inp->channels();
+        assert((input_channels &3)==0 && (_channels_out&3)==0 && "channel sizes must be multiple of 4, use RGBA etc.");
         this->output_dilation=Int3(2,2,1);
         this->set_size( output_dilation*Int3(inp->width(),inp->height(), _channels_out) );
         filter.init_random(Int4(_filter_size.x,_filter_size.y, input_channels,_channels_out));
@@ -677,7 +703,7 @@ public:
 
 
 
-class FullyConnected : public Node {
+class FullyConnected : public NeuralNet::Node {
     Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
 public:
@@ -685,7 +711,7 @@ public:
         c->fmadds+=matrix_weights.shape.hmul();
         c->parameters+=matrix_weights.shape.hmul();
     }
-    FullyConnected(NeuralNet* owner, int _input, int _channels_out) : Node(owner,"matmul_on_z",_input) {
+    FullyConnected(NeuralNet* owner, int _input, int _channels_out) : NeuralNet::Node(owner,"matmul_on_z",_input) {
         auto inp=input_node(0);
         auto s=inp->activations.shape.hmul();
         assert(s==inp->activations.shape.z && "input to fully connected layer must be flattened to Z, assumptions for interleave..");
@@ -698,55 +724,60 @@ public:
     }
 
 };
-class ConcatZ : public Node {
+class ConcatZ : public NeuralNet::Node {
     const char* name() const override{return "ConcatZ";}
 public:
-    ConcatZ(NeuralNet* owner, int src0, int src1) :Node(owner,"concat_z",src0,src1) {
+    ConcatZ(NeuralNet* owner, int src0, int src1) : NeuralNet::Node(owner,"concat_z",src0,src1) {
         auto in0=this->input_node(0),in1=this->input_node(1);
         assert(in0->width()==in1->width() && in0->height()==in1->height());
         this->set_size(Int3(in0->width(),in0->height(), in0->channels()+in1->channels()));
     }
 };
 
-class Add : public Node {
+class Add : public NeuralNet::Node {
     const char* name() const override{return "Add";}
 public:
-    Add(NeuralNet* owner, int src0, int src1) :Node(owner,"vector_add",src0,src1) {
+    Add(NeuralNet* owner, int src0, int src1) : NeuralNet::Node(owner,"vector_add",src0,src1) {
         auto in0=this->input_node(0),in1=this->input_node(1);
         assert(in0->activations.shape==in1->activations.shape);
         this->set_size(Int3(in0->width(),in0->height(), in0->channels()));
     }
 };
 
-class AvPool2x2 : public Node {
+class AvPool2x2 : public NeuralNet::Node {
     const char* name() const override{return "AvPool2x2";}
 public:
-    AvPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,"avpool2x2",_input){
+    AvPool2x2(NeuralNet* owner,int _input=-1) : NeuralNet::Node(owner,"avpool2x2_nhwc",_input){
         auto inp=input_node(0);
         this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
     }
 };
-class DebugFill : public Node {
+class DebugFill : public NeuralNet::Node {
     const char* name() const override{return "DebugFill";}
+    float val;
 public:
-    DebugFill(NeuralNet* owner,int _input=-1) : Node(owner,"debug_fill",_input){
+    DebugFill(NeuralNet* owner,float _val,int _input=-1) : NeuralNet::Node(owner,"debug_fill",_input), val(_val){
         auto inp=input_node(0);
         this->set_size( input_node(0)->activations.shape.xyz() );
     }
+    void set_extra_args(int argid) override{
+        this->kernel->set_arg(argid,val);
+    }
+
 };
 
 
-class MaxPool2x2 : public Node {
+class MaxPool2x2 : public NeuralNet::Node {
     const char* name() const override{return "MaxPool2x2";}
 public:
-    MaxPool2x2(NeuralNet* owner,int _input=-1) : Node(owner,"maxpool2x2",_input){
+    MaxPool2x2(NeuralNet* owner,int _input=-1) : NeuralNet::Node(owner,"maxpool2x2",_input){
         auto inp=input_node(0);
         this->set_size( Int3(inp->width()/2,inp->height()/2,inp->channels()));
     }
 };
 
 // hacky, probably not useful.
-class Expand2x2 : public Node {
+class Expand2x2 : public NeuralNet::Node {
     const char* name() const override{return "Expand2x2";}
 public:
     Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,"expand2x2",_input){
@@ -755,7 +786,7 @@ public:
     }
 };
 
-class FlattenToZ : public Node {
+class FlattenToZ : public NeuralNet::Node {
     const char* name() const override{return "FlattenToZ";}
 public:
     FlattenToZ(NeuralNet* owner,int _input=-1) : Node(owner,"flatten_to_z",_input){
@@ -767,10 +798,10 @@ public:
     }
 };
 
-class InputImage : Node{
+class InputImage : NeuralNet::Node{
     const char* name() const override{return "InputImage";};
 public:
-    InputImage(NeuralNet* net, Int3 _size) : Node(net,nullptr) {
+    InputImage(NeuralNet* net, Int3 _size) : NeuralNet::Node(net,nullptr) {
         this->set_size(_size);
     }
 };
@@ -778,13 +809,10 @@ public:
 std::unique_ptr<NeuralNet> make_trivial_edgedetector_convnet() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
-    new InputImage(net, Int3(256,256,3));
-    new Conv2d(net,-1 , Int2(3,3), 3, 1);
+    new InputImage(net, Int3(256,256,4));
+    new Conv2d(net,-1 , Int2(3,3), 1, 1);
     new AvPool2x2(net);
-    new Conv2d(net,-1 , Int2(3,3), 2, 1);
-    new AvPool2x2(net);
-    new DeconvXY2x(net,-1 , Int2(6,6), 2);
-    new DeconvXY2x(net,-1 , Int2(6,6), 3);
+    new ConvDilated2x(net,-1 , Int2(6,6), 4);
     return thenet;
 }
 
@@ -792,32 +820,24 @@ std::unique_ptr<NeuralNet> make_example_convnet() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
 
-    new InputImage(net, Int3(256,256,3));
-    
-    new Conv2d(net,-1 , Int2(3,3), 24, 1);
-    
-    new AvPool2x2(net);
+    new InputImage(net, Int3(256,256,4));
+
+    new Conv2d(net,-1 , Int2(3,3), 16, 1);
+    new Conv2d(net,-1 , Int2(3,3), 24, 2);  // stride 2 to downsample->128x128
+    new Conv2d(net,-1 , Int2(3,3), 32, 1);
+    new Conv2d(net,-1 , Int2(3,3), 32, 2);  // 64x64 x 32
     new Conv2d(net,-1 , Int2(3,3), 64, 1);
-    
-    
-    new AvPool2x2(net);
-
-    new Conv2d(net,-1 , Int2(3,3), 96, 1);
-
-    new AvPool2x2(net);
-    
-
+    new Conv2d(net,-1 , Int2(3,3), 64, 2);  // 32x32 x 64
     new Conv2d(net,-1 , Int2(3,3), 128, 1);
-
-    //new AvPool2x2(&net);    
-    new Conv2d(net,-1 , Int2(3,3), 24, 2);
-
-    new DeconvXY2x(net,-1 , Int2(6,6), 64);
-    new DeconvXY2x(net,-1 , Int2(6,6), 32);
-    new DeconvXY2x(net,-1 , Int2(6,6), 24);
-    new DeconvXY2x(net,-1 , Int2(6,6), 16);
-    new DeconvXY2x(net,-1 , Int2(6,6), 12);
-    new DeconvXY2x(net,-1 , Int2(6,6), 3);
+    new Conv2d(net,-1 , Int2(3,3), 128, 2); // -> 16x16 x 128
+    new Conv2d(net,-1 , Int2(3,3), 256, 1); // 16x16 x 256 = deepest latent representation
+    new ConvDilated2x(net,-1 , Int2(6,6), 128); // now deconvs expand (=dilated convolution)
+    new ConvDilated2x(net,-1 , Int2(6,6), 128);
+    new ConvDilated2x(net,-1 , Int2(6,6), 64);
+    new ConvDilated2x(net,-1 , Int2(6,6), 32);
+    
+    new ConvDilated2x(net,-1 , Int2(6,6), 16);
+    new ConvDilated2x(net,-1 , Int2(6,6), 4);
 
     return thenet;
 }
@@ -826,7 +846,7 @@ void test_setup_convnet() {
     TRACE
     auto net = make_example_convnet();
 
-    //new DeconvXY2x(&net,-1 , Int2(6,6), 3);
+    //new ConvDilated2x(&net,-1 , Int2(6,6), 3);
 
 
 /*
@@ -835,6 +855,7 @@ void test_setup_convnet() {
     new FullyConnected(&net,-1, 32);
 */
     net->dump();
+    //exit(0);
     TRACE
     
     int num_iter=1;
@@ -918,6 +939,7 @@ void fill_buffer_from_sdl_surface(Buffer<float>& buffer, SDL_Surface* src){
     buffer.to_device();
     TRACE
 }
+
 void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, Buffer<float>* src,float scale) {
 
     if (!sfc) return;
@@ -939,7 +961,8 @@ void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, 
 
 }
 void run_neural_net_test(SDL_Surface* input) {
-    auto net = make_trivial_edgedetector_convnet();
+    //auto net = make_trivial_edgedetector_convnet();
+    auto net = make_example_convnet();
     
 
     fill_buffer_from_sdl_surface(net->first_node()->activations, input);
@@ -948,13 +971,15 @@ void run_neural_net_test(SDL_Surface* input) {
         
         net->eval();
         
-        Node* last=net->last_node();
-        Node* first=net->first_node();
+        
+        NeuralNet::Node* last=net->last_node();
+        NeuralNet::Node* first=net->first_node();
         
         last->activations.from_device();
 
-        copy_sdl_surface_from_buffer(sfc, 0,0,sfc->w/2,sfc->h, &first->activations,256.0);
-        copy_sdl_surface_from_buffer(sfc, sfc->w/2,0,sfc->w/2,sfc->h, &last->activations,1024.0);
+        copy_sdl_surface_from_buffer(sfc, frame&255,0,sfc->w/2,sfc->h, &first->activations,256.0);
+
+         copy_sdl_surface_from_buffer(sfc, sfc->w/2,0,sfc->w/2,sfc->h, &last->activations,1024.0);
         
     });
 }

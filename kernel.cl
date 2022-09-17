@@ -1,19 +1,36 @@
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
+typedef float val_t;
+typedef float4 val4_t;
+
+inline val_t vec4hadd(val4_t a){
+    return (a.x+a.y)+(a.z+a.w);
+}
 
 __kernel void vector_add( __global float *dst, __global const float *src0, __global const float *src1) {
     int i = get_global_id(0);					
     dst[i] = src0[i]+ src1[i];
 }
 // todo - calculate indices per line etc.
+// wzyx
 int lin_index(int4 shape, int x,int y,int z){
     return x+shape.x*(y + shape.y* z);
 }
+// wyxz
+int lin_index_nhwc(int4 shape, int x,int y,int z){
+    return z+shape.z*(x + shape.x* y);
+}
+
 float get3df(__global const float* src, int4 srcshape, int x,int y,int z) {
     return src[x + srcshape.x*(y  + srcshape.y * z)];
 }
 void set3df(__global float* dst, int4 dstshape, int x, int y, int z, float value) {
     dst[x + dstshape.x*(y + dstshape.y * z)] = value;
 }
+
+void set3df_nhwc(__global float* dst, int4 dstshape, int x, int y, int z, float value) {
+    dst[z + dstshape.z*(x + dstshape.x * y)] = value;
+}
+
 
 __kernel void concat_z( __global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __global const float *src1,int4 src1size) {
     int i = get_global_id(0),j = get_global_id(1),k = get_global_id(2);
@@ -40,11 +57,11 @@ __kernel void matmul_on_z(__global float *dst, int4 dstsize, __global const floa
     
     dst[vec_index] = sum;
 }
-__kernel void debug_fill(__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+__kernel void debug_fill(__global float* dst,int4 dstsize, float x){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
-    set3df(dst,dstsize,i,j,k, (float)(i%100)+(float)(j%100)*100.0+(float)(k%100)*10000.0);
+    set3df(dst,dstsize,i,j,k, x+(float)(i%100)+(float)(j%100)*100.0+(float)(k%100)*10000.0);
 }
 
 __kernel void avpool2x2(__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
@@ -55,6 +72,17 @@ __kernel void avpool2x2(__global float* dst,int4 dstsize, __global const float* 
     float val=0.25f*(src0[si] + src0[si+1] + src0[si+src0size.x]+src0[si+src0size.x+1]);
     //float val  = get3df(src0,src0size, i*2,j*2,k);
     set3df(dst,dstsize,i,j,k, val);
+}
+__kernel void avpool2x2_nhwc(__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+    int i = get_global_id(0);
+    int j = get_global_id(1);
+    int k = get_global_id(2);
+    int si00=lin_index_nhwc(src0size,i*2,(j+1)*2,k);
+    int si10=lin_index_nhwc(src0size,i*2,(j+1)*2,k);
+
+    float val=0.25f*(src0[si00] + src0[si00+src0size.z] + src0[si10]+src0[si10+src0size.z]);
+    
+    set3df_nhwc(dst,dstsize,i,j,k, val);
 }
 
 __kernel void vector_add_scaled(__global float *dst, __global const float *src0, __global const float *src1, float f0, float f1) {
@@ -133,6 +161,57 @@ __kernel void conv2d_planar(
 
     set3df(dst, dst_shape, ix,iy,dst_channel, sum);
 }
+
+__kernel void conv2d_nhwc(
+        __global val_t* dst,                 // 3d array wdith,height, dstchannels
+        int4 dst_shape,
+        __global const val_t* src,  // 3d array width,height,srcchannels
+        int4 src_shape,
+        __constant const val_t* filter, // 4D array, width,height,srcchannels,dstchannels
+        int4 filter_shape,
+        int2 src_stride,
+        float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
+{
+    int ix=get_global_id(0); // dest x
+    int iy=get_global_id(1); // dest y
+    int dst_channel=get_global_id(2); // dest channel
+
+    int sx = ix*src_stride.x;
+    int sy = iy*src_stride.y;
+
+    float sum=0.0;
+
+    int layerofs = dst_channel * filter_shape.z;
+    // requires shape0.z == shape1.z
+    // TODO - unrolling opt
+    int fi = filter_shape.x*filter_shape.y*filter_shape.z * dst_channel;
+    int kxmax=filter_shape.x;
+    int kymax=filter_shape.y;
+    if (sx+kxmax > src_shape.x){kxmax=src_shape.x-sx;}
+    if (sy+kymax > src_shape.y){kymax=src_shape.y-sy;}
+        
+    for (int ky=0; ky<kymax; ky++){
+        
+        for (int kx=0; kx<kxmax; kx++) {
+
+            int si =lin_index_nhwc(src_shape, sx+kx,sy+ky,0);
+            int kz=0;
+            for (; (kz+4)<=filter_shape.z; kz+=4,fi+=4, si+=4) {
+                sum+=src[si]*filter[fi];
+                sum+=src[si+1]*filter[fi+1];
+                sum+=src[si+2]*filter[fi+2];
+                sum+=src[si+3]*filter[fi+3];
+            }
+            for (; kz<filter_shape.z; kz+=1,fi+=1, si+=1) {
+                sum+=src[si]*filter[fi];
+            }
+        }        
+    }
+    if (sum<0.0) {sum*=negfactor;}
+
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, sum);
+}
+
 
 __kernel void deconv_xy_2x_planar_unopt(
         __global float* dst,                 // 3d array wdith,height, dstchannels
@@ -278,5 +357,64 @@ __kernel void deconv_xy_2x_planar(
     dst[di+1]=sum01;
     dst[di+dst_shape.x]=sum10;
     dst[di+dst_shape.x+1]=sum11;
-
 }
+
+__kernel void deconv_xy_2x_nhwc(
+        __global val_t* dst,                 // 3d array wdith,height, dstchannels
+        int4 dst_shape,
+        __global const val_t* src,  // 3d array width,height,srcchannels
+        int4 src_shape,
+        __constant const val_t* filter, // 4D array, width,height,srcchannels,dstchannels
+        int4 filter_shape,
+        float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
+{
+    int sx=get_global_id(0); // dest x
+    int sy=get_global_id(1); // dest y
+    int dst_channel=get_global_id(2); // dest channel
+
+    int dx = sx*2;
+    int dy = sy*2;
+
+    float sum00=0.0;
+    float sum01=0.0;
+    float sum10=0.0;
+    float sum11=0.0;
+
+    int layerofs = dst_channel * filter_shape.z;
+        
+    for (int ky=0; ky<filter_shape.y; ky+=2){
+        for (int kx=0; kx<filter_shape.x; kx+=2) {
+            int si = lin_index_nhwc(src_shape, sx+kx/2, sy+ky/2, 0);
+            
+            int fi00 = lin_index_nhwc(filter_shape, kx, ky, 0+layerofs);
+            int fi01 = lin_index_nhwc(filter_shape, kx+1, ky, 0+layerofs);
+            int fi10 = lin_index_nhwc(filter_shape, kx, ky+1, 0+layerofs);
+            int fi11 = lin_index_nhwc(filter_shape, kx+1, ky+1, 0+layerofs);
+
+            int kz=0;            
+            for (; (kz+4)<=filter_shape.z; kz+=4, si+=4,fi00+=4,fi01+=4,fi10+=4,fi11+=4) {
+ 
+            } 
+            
+            for (; kz<=filter_shape.z; kz+=1) {
+                float s=src[lin_index_nhwc(src_shape, sx+kx/2, sy+ky/2, kz)];
+                sum00+=s*filter[lin_index_nhwc(filter_shape, kx, ky, kz+layerofs)];
+                sum01+=s*filter[lin_index_nhwc(filter_shape, kx+1, ky, kz+layerofs)];
+                sum10+=s*filter[lin_index_nhwc(filter_shape, kx, ky+1, kz+layerofs)];
+                sum11+=s*filter[lin_index_nhwc(filter_shape, kx+1, ky+1, kz+layerofs)];
+            }
+        }        
+    }
+
+    if (sum00<0.0) {sum00*=negfactor;}
+    if (sum01<0.0) {sum01*=negfactor;}
+    if (sum10<0.0) {sum10*=negfactor;}
+    if (sum11<0.0) {sum11*=negfactor;}
+
+    //todo 2x2 block write
+    dst[lin_index_nhwc(dst_shape, dx,  dy,  dst_channel)] = sum00;
+    dst[lin_index_nhwc(dst_shape, dx+1,dy,  dst_channel)] = sum01;
+    dst[lin_index_nhwc(dst_shape, dx,  dy+1,dst_channel)] = sum10;
+    dst[lin_index_nhwc(dst_shape, dx+1,dy+1,dst_channel)] = sum11;
+}
+
