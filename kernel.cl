@@ -6,7 +6,7 @@ inline val_t vec4hadd(val4_t a){
     return (a.x+a.y)+(a.z+a.w);
 }
 
-__kernel void vector_add( __global float *dst, __global const float *src0, __global const float *src1) {
+__kernel void vector_add(__global float *dst, __global const float *src0, __global const float *src1) {
     int i = get_global_id(0);					
     dst[i] = src0[i]+ src1[i];
 }
@@ -31,14 +31,13 @@ void set3df_nhwc(__global float* dst, int4 dstshape, int x, int y, int z, float 
     dst[z + dstshape.z*(x + dstshape.x * y)] = value;
 }
 
-
-__kernel void concat_z( __global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __global const float *src1,int4 src1size) {
+__kernel void concat_z(int4 dstofs, __global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __global const float *src1,int4 src1size) {
     int i = get_global_id(0),j = get_global_id(1),k = get_global_id(2);
     float val=(k<src0size.z)? get3df(src0,src0size,i,j,k) : get3df(src1,src1size,i,j,k-src0size.z);
     set3df(dst,dstsize, i,j,k, val);
 }
 
-__kernel void matmul_on_z(__global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __constant const float* matrix, int4 matrixsize) {
+__kernel void matmul_on_z(int4 dstofs,__global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __constant const float* matrix, int4 matrixsize) {
     // confusing, take care!
     // Z axis of 3d arrays is considered as input & output of the matrix multiply,
     // besides that 'w' is matrix weights
@@ -57,14 +56,15 @@ __kernel void matmul_on_z(__global float *dst, int4 dstsize, __global const floa
     
     dst[vec_index] = sum;
 }
-__kernel void debug_fill(__global float* dst,int4 dstsize, float x){
+
+__kernel void debug_fill(int4 dstofs,__global float* dst,int4 dstsize, float x){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
     set3df(dst,dstsize,i,j,k, x+(float)(i%100)+(float)(j%100)*100.0+(float)(k%100)*10000.0);
 }
 
-__kernel void avpool2x2(__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+__kernel void avpool2x2(int4 dstofs, __global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
@@ -73,7 +73,7 @@ __kernel void avpool2x2(__global float* dst,int4 dstsize, __global const float* 
     //float val  = get3df(src0,src0size, i*2,j*2,k);
     set3df(dst,dstsize,i,j,k, val);
 }
-__kernel void avpool2x2_nhwc(__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+__kernel void avpool2x2_nhwc(int4 dstofs,__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
@@ -103,7 +103,7 @@ __kernel void vector_mul(__global float *dst, __global const float *src0, __glob
 }									
 
 // rescale values
-__kernel void vector_mul_add_clamp(__global float *dst, __global const float *src0,  float scale, float ofs, float min, float max) {
+__kernel void vector_mul_add_clamp(int4 dstofs,__global float *dst, __global const float *src0,  float scale, float ofs, float min, float max) {
     int i = get_global_id(0);
     float f=src0[i]*scale + ofs;
     if (f<min) f=min; else if (f>max) f=max;
@@ -114,6 +114,7 @@ __kernel void vector_mul_add_clamp(__global float *dst, __global const float *sr
 // todo - interleaving 'z' probably better (width,height,channels vs ..)
 
 __kernel void conv2d_planar(
+        int4  dstofs,
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __constant const float* src,  // 3d array width,height,srcchannels
@@ -163,6 +164,7 @@ __kernel void conv2d_planar(
 }
 
 __kernel void conv2d_nhwc(
+        int4  dstofs,    
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const val_t* src,  // 3d array width,height,srcchannels
@@ -214,6 +216,7 @@ __kernel void conv2d_nhwc(
 
 
 __kernel void deconv_xy_2x_planar_unopt(
+        int4  dstofs,    
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const float* src,  // 3d array width,height,srcchannels
@@ -280,6 +283,7 @@ __kernel void deconv_xy_2x_planar_unopt(
 
 }
 __kernel void deconv_xy_2x_planar(
+        int4  dstofs,    
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const float* src,  // 3d array width,height,srcchannels
@@ -360,6 +364,7 @@ __kernel void deconv_xy_2x_planar(
 }
 
 __kernel void deconv_xy_2x_nhwc(
+        int4  dstofs,    
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const val_t* src,  // 3d array width,height,srcchannels

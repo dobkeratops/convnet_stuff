@@ -62,7 +62,7 @@ struct ClDeviceInfo {
     char device_name[512]; //CL_DEVICE_NAME
     char device_type[512];
     cl_uint local_mem_size;
-    cl_ulong global_mem_cache_size;
+    size_t global_mem_cache_size;
     size_t max_workgroup_size;//CL_DEVICE_MAX_WORK_GROUP_SIZE
     size_t max_work_item_sizes[3];
 };
@@ -94,11 +94,11 @@ void opencl_init() {
     CL_GET_INFO(CL_DEVICE_EXTENSIONS, extensions, "%s");
     CL_GET_INFO(CL_DEVICE_NAME, device_name, "%s");
     CL_GET_INFO(CL_DEVICE_TYPE,device_type, "%s");
-    CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%lu8");
+    CL_GET_INFO(CL_DEVICE_LOCAL_MEM_SIZE,local_mem_size, "%u");
     
    
-    CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%lu");
-    CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%lu");
+    CL_GET_INFO(CL_DEVICE_MAX_WORK_GROUP_SIZE,max_workgroup_size,"%zu");
+    CL_GET_INFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,global_mem_cache_size,"%zu");
     #undef CL_GET_INFO
 
     {
@@ -394,7 +394,13 @@ struct Kernel {
         }
     }
     void verify_args()const{
-        assert(this->arg_set == (1<<this->num_args)-1);
+        if (this->arg_set != (1<<this->num_args)-1) {
+            printf("kernel %s: not all kernel args set:\n",this->name.c_str());
+            for (int i=0; i<this->num_args; i++) {
+                printf("arg[%d]:%d,",i, 0!=(this->arg_set & (1<<i)));
+            }
+            assert(0 &&"\n not all args set");
+        }
     }
     void enqueue_range(size_t globalsize,size_t localsize) {
         verify_args();
@@ -452,6 +458,7 @@ void opencl_test_basic() {
 	
     auto prg = std::make_shared<Program>("kernel.cl");
 	auto kernel=Kernel(prg,"vector_add_scaled");
+    
     kernel.set_arg(0,buffer_c).set_arg(1,buffer_a).set_arg(2,buffer_b).set_arg(3,1000.0f).set_arg(4,1.0f);
 
     kernel.enqueue_range(testsize,64);
@@ -556,7 +563,7 @@ protected:
     Node(NeuralNet* net, const char* entrypt,nodeid _input) : Node(net,entrypt){inputs.resize(1);inputs[0] = _input<0?this->index+_input:_input;}    
     Node(NeuralNet* net,const char* entrypt,nodeid src0,nodeid src1) : Node(net,entrypt){inputs.resize(2);inputs[0] = src0<0?this->index+src0:src0;inputs[1] = src1<0?this->index+src1:src1;}
     Node* input_node(int i)const{return net->nodes[this->inputs[i]];}
-    void set_kernel_buffer_args();
+    int set_kernel_buffer_args();
     virtual ~Node();
     virtual void dump_extra(){};
 };
@@ -605,16 +612,19 @@ void NeuralNet::eval() {
 
 }
 
-void NeuralNet::Node::set_kernel_buffer_args(){
+int NeuralNet::Node::set_kernel_buffer_args(){
     assert(this->kernel!=nullptr);
     // conventoin expected by kernel code: first arg is destination
     // alternate buffer and shape data
-    this->kernel->set_arg_buffer_shape(0,this->activations);
+    this->kernel->set_arg(0, this->activations.padding);
+    const int num_preceeding_args=1;
+    this->kernel->set_arg_buffer_shape(num_preceeding_args,this->activations);
     // then list sources
     for (size_t i=0; i<this->inputs.size(); i++) {
-        this->kernel->set_arg_buffer_shape((i+1)*2, this->input_node(i)->activations);
+        this->kernel->set_arg_buffer_shape(num_preceeding_args+ (i+1)*2, this->input_node(i)->activations);
     }
     // kernel custom args follow
+    return num_preceeding_args+(1+this->inputs.size())*2;
     
 }
 bool can_inc_dim(int current, int max){
@@ -645,8 +655,8 @@ Int3 get_workgroup_size_for(const Int3& worksize){
 void NeuralNet::Node::eval() {
     //printf("eval node:%s{\n",this->name());
     if (this->kernel==nullptr) {return;}
-    this->set_kernel_buffer_args();
-    this->set_extra_args((this->inputs.size()+1)*2);
+    auto next_arg=this->set_kernel_buffer_args();
+    this->set_extra_args(next_arg);
     // todo - tweaking of ß
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
     
@@ -676,7 +686,7 @@ class Conv2d : public NeuralNet::Node{
         printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
     }
     void set_extra_args(int argid) override{
-        assert(argid==4);
+        
         this->kernel->set_arg_buffer_shape(argid,filter);
         this->kernel->set_arg(argid+2, this->stride);
         this->kernel->set_arg(argid+3, this->negfactor);
@@ -707,7 +717,7 @@ class ConvDilated2x : public NeuralNet::Node{
         printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
     }
     void set_extra_args(int argid) override{
-        assert(argid==4);
+
         this->kernel->set_arg_buffer_shape(argid,filter);
         this->kernel->set_arg(argid+2, this->negfactor);
     }
