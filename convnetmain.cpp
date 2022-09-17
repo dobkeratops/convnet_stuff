@@ -822,7 +822,7 @@ std::unique_ptr<NeuralNet> make_example_convnet() {
 
     new InputImage(net, Int3(256,256,4));
 
-    new Conv2d(net,-1 , Int2(3,3), 16, 1);
+    new Conv2d(net,-1 , Int2(3,3), 16, 1); 
     new Conv2d(net,-1 , Int2(3,3), 24, 2);  // stride 2 to downsample->128x128
     new Conv2d(net,-1 , Int2(3,3), 32, 1);
     new Conv2d(net,-1 , Int2(3,3), 32, 2);  // 64x64 x 32
