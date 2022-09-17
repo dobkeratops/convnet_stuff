@@ -844,17 +844,17 @@ public:
     }
 };
 
-std::unique_ptr<NeuralNet> make_trivial_edgedetector_convnet() {
+std::unique_ptr<NeuralNet> make_convnet_trivial_edgedetector() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
     new InputImage(net, Int3(256,256,4));
-    new Conv2d(net,-1 , Int2(3,3), 1, 1);
-    new AvPool2x2(net);
-    new ConvDilated2x(net,-1 , Int2(6,6), 4);
+    new Conv2d(net,-1 , Int2(3,3), 4, 1);
+    //new AvPool2x2(net);
+    //new ConvDilated2x(net,-1 , Int2(6,6), 4);
     return thenet;
 }
 
-std::unique_ptr<NeuralNet> make_example_convnet() {
+std::unique_ptr<NeuralNet> make_convnet_example() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
 
@@ -882,7 +882,7 @@ std::unique_ptr<NeuralNet> make_example_convnet() {
 
 void test_setup_convnet() {
     TRACE
-    auto net = make_example_convnet();
+    auto net = make_convnet_example();
 
     //new ConvDilated2x(&net,-1 , Int2(6,6), 3);
 
@@ -999,8 +999,8 @@ void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, 
 
 }
 void run_neural_net_test(SDL_Surface* input) {
-    //auto net = make_trivial_edgedetector_convnet();
-    auto net = make_example_convnet();
+    bool which =false;
+    auto net = which?make_convnet_trivial_edgedetector():make_convnet_example();
     
 
     fill_buffer_from_sdl_surface(net->first_node()->activations, input);
