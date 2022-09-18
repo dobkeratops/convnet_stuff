@@ -31,13 +31,13 @@ void set3df_nhwc(__global float* dst, int4 dstshape, int x, int y, int z, float 
     dst[z + dstshape.z*(x + dstshape.x * y)] = value;
 }
 
-__kernel void concat_z(int4 dstofs, __global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __global const float *src1,int4 src1size) {
+__kernel void concat_z(int4 dstofs,int4 dststride, __global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __global const float *src1,int4 src1size) {
     int i = get_global_id(0),j = get_global_id(1),k = get_global_id(2);
     float val=(k<src0size.z)? get3df(src0,src0size,i,j,k) : get3df(src1,src1size,i,j,k-src0size.z);
     set3df(dst,dstsize, i,j,k, val);
 }
 
-__kernel void matmul_on_z(int4 dstofs,__global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __constant const float* matrix, int4 matrixsize) {
+__kernel void matmul_on_z(int4 dstofs,int4 dststride,__global float *dst, int4 dstsize, __global const float *src0,int4 src0size, __constant const float* matrix, int4 matrixsize) {
     // confusing, take care!
     // Z axis of 3d arrays is considered as input & output of the matrix multiply,
     // besides that 'w' is matrix weights
@@ -57,14 +57,14 @@ __kernel void matmul_on_z(int4 dstofs,__global float *dst, int4 dstsize, __globa
     dst[vec_index] = sum;
 }
 
-__kernel void debug_fill(int4 dstofs,__global float* dst,int4 dstsize, float x){
+__kernel void debug_fill(int4 dstofs,int4 dststride ,__global float* dst,int4 dstsize, float x){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
     set3df(dst,dstsize,i,j,k, x+(float)(i%100)+(float)(j%100)*100.0+(float)(k%100)*10000.0);
 }
 
-__kernel void avpool2x2(int4 dstofs, __global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+__kernel void avpool2x2(int4 dstofs,int4 dststride, __global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
@@ -73,7 +73,7 @@ __kernel void avpool2x2(int4 dstofs, __global float* dst,int4 dstsize, __global 
     //float val  = get3df(src0,src0size, i*2,j*2,k);
     set3df(dst,dstsize,i,j,k, val);
 }
-__kernel void avpool2x2_nhwc(int4 dstofs,__global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
+__kernel void avpool2x2_nhwc(int4 dstofs,int4 dststride, __global float* dst,int4 dstsize, __global const float* src0, int4 src0size){
     int i = get_global_id(0);
     int j = get_global_id(1);
     int k = get_global_id(2);
@@ -103,7 +103,7 @@ __kernel void vector_mul(__global float *dst, __global const float *src0, __glob
 }									
 
 // rescale values
-__kernel void vector_mul_add_clamp(int4 dstofs,__global float *dst, __global const float *src0,  float scale, float ofs, float min, float max) {
+__kernel void vector_mul_add_clamp(int4 dstofs,int4 dststride, __global float *dst, __global const float *src0,  float scale, float ofs, float min, float max) {
     int i = get_global_id(0);
     float f=src0[i]*scale + ofs;
     if (f<min) f=min; else if (f>max) f=max;
@@ -115,6 +115,7 @@ __kernel void vector_mul_add_clamp(int4 dstofs,__global float *dst, __global con
 
 __kernel void conv2d_planar(
         int4  dstofs,
+        int4 dststride,
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __constant const float* src,  // 3d array width,height,srcchannels
@@ -164,7 +165,7 @@ __kernel void conv2d_planar(
 }
 
 __kernel void conv2d_nhwc(
-        int4  dstofs,    
+        int4  dstofs,int4 dststride,    
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const val_t* src,  // 3d array width,height,srcchannels
@@ -214,9 +215,142 @@ __kernel void conv2d_nhwc(
     set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, sum);
 }
 
+__kernel void conv2d_nhwc_block2x2x4(
+        int4  dstofs,int4 dststride,    
+        __global val_t* dst,                 // 3d array wdith,height, dstchannels
+        int4 dst_shape,
+        __global const val_t* src,  // 3d array width,height,srcchannels
+        int4 src_shape,
+        __constant const val_t* filter, // 4D array, width,height,srcchannels,dstchannels
+        int4 filter_shape,
+        int2 src_stride,
+        float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
+{
+    
+    int ix=get_global_id(0)*2; // dest x
+    int iy=get_global_id(1)*2; // dest y
+    int dst_channel=get_global_id(2)*4; // dest channel
+
+    int sx = ix*src_stride.x;
+    int sy = iy*src_stride.y;
+
+
+    int layerofs = dst_channel * filter_shape.z;
+    // requires shape0.z == shape1.z
+    // TODO - unrolling opt
+    int filter_channelsize=filter_shape.x*filter_shape.y*filter_shape.z;
+    int fi0 = filter_channelsize * dst_channel;
+    int fi1 = fi0+ filter_channelsize;
+    int fi2 = fi1+ filter_channelsize;
+    int fi3 = fi2+ filter_channelsize;
+
+    float sum000=0.0;
+    float sum100=0.0;
+    float sum010=0.0;
+    float sum110=0.0;
+    float sum001=0.0;
+    float sum101=0.0;
+    float sum011=0.0;
+    float sum111=0.0;
+    float sum002=0.0;
+    float sum102=0.0;
+    float sum012=0.0;
+    float sum112=0.0;
+    float sum003=0.0;
+    float sum103=0.0;
+    float sum013=0.0;
+    float sum113=0.0;
+
+    for (int ky=0; ky<filter_shape.x; ky++){
+        
+        for (int kx=0; kx<filter_shape.y; kx++) {
+
+            int si00 =lin_index_nhwc(src_shape, sx+kx,sy+ky,0);
+            int si10 =lin_index_nhwc(src_shape, sx+kx+1,sy+ky,0);
+            int si01 =lin_index_nhwc(src_shape, sx+kx,sy+ky+1,0);
+            int si11 =lin_index_nhwc(src_shape, sx+kx+1,sy+ky+1,0);
+            int kz=0;
+            for (; kz<filter_shape.z; kz+=1,fi0+=1, fi1+=1,fi2+=1,fi3+=1, si00+=1,si01+=1,si10+=1,si11+=1) {
+                // 2x2 block of sources
+                float s00 = src[si00];
+                float s10 = src[si10];
+                float s01 = src[si01];
+                float s11 = src[si11];
+
+                // .. into 2x2x2 accumulators
+                float f0 = filter[fi0]; // out layer0
+                float f1 = filter[fi1]; // out layer1
+                float f2 = filter[fi2]; // out layer2
+                float f3 = filter[fi3]; // out layer3
+                // 8 loads -> 16 MACCs.
+
+                sum000 += s00 * f0;
+                sum100 += s10 * f0;
+                sum010 += s01 * f0;
+                sum110 += s11 * f0;
+                
+                sum001 += s00 * f1;
+                sum101 += s10 * f1;
+                sum011 += s01 * f1;
+                sum111 += s11 * f1;
+
+                sum002 += s00 * f2;
+                sum102 += s10 * f2;
+                sum012 += s01 * f2;
+                sum112 += s11 * f2;
+
+                sum003 += s00 * f3;
+                sum103 += s10 * f3;
+                sum013 += s01 * f3;
+                sum113 += s11 * f3;
+
+            }
+        }        
+    }
+    
+    if (sum000<0.0) {sum000*=negfactor;}
+    if (sum100<0.0) {sum100*=negfactor;}
+    if (sum010<0.0) {sum010*=negfactor;}
+    if (sum110<0.0) {sum110*=negfactor;}
+    if (sum001<0.0) {sum001*=negfactor;}
+    if (sum101<0.0) {sum101*=negfactor;}
+    if (sum011<0.0) {sum011*=negfactor;}
+    if (sum111<0.0) {sum111*=negfactor;}
+    if (sum002<0.0) {sum002*=negfactor;}
+    if (sum102<0.0) {sum102*=negfactor;}
+    if (sum012<0.0) {sum012*=negfactor;}
+    if (sum112<0.0) {sum112*=negfactor;}
+    if (sum003<0.0) {sum003*=negfactor;}
+    if (sum103<0.0) {sum103*=negfactor;}
+    if (sum013<0.0) {sum013*=negfactor;}
+    if (sum113<0.0) {sum113*=negfactor;}
+
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, sum000);
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel, sum010);
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel, sum100);
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel, sum110);
+
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+1, sum001);
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+1, sum011);
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+1, sum101);
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+1, sum111);
+
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+2, sum002);
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+2, sum012);
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+2, sum102);
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+2, sum112);
+
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+3, sum003);
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+3, sum013);
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+3, sum103);
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+3, sum113);
+    
+}
+
+
 
 __kernel void deconv_xy_2x_planar_unopt(
-        int4  dstofs,    
+        int4  dstofs,int4 dststride,    
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const float* src,  // 3d array width,height,srcchannels
@@ -283,7 +417,7 @@ __kernel void deconv_xy_2x_planar_unopt(
 
 }
 __kernel void deconv_xy_2x_planar(
-        int4  dstofs,    
+        int4  dstofs,int4 dststride,
         __global float* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const float* src,  // 3d array width,height,srcchannels
@@ -364,21 +498,24 @@ __kernel void deconv_xy_2x_planar(
 }
 
 __kernel void deconv_xy_2x_nhwc(
-        int4  dstofs,    
+        int4  dstofs,int4 dststride,
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
         __global const val_t* src,  // 3d array width,height,srcchannels
         int4 src_shape,
         __constant const val_t* filter, // 4D array, width,height,srcchannels,dstchannels
         int4 filter_shape,
+        int2 src_stride,
         float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
 {
-    int sx=get_global_id(0); // dest x
-    int sy=get_global_id(1); // dest y
+    int ix=get_global_id(0); // dest x
+    int iy=get_global_id(1); // dest y
     int dst_channel=get_global_id(2); // dest channel
 
-    int dx = sx*2;
-    int dy = sy*2;
+    int dx = ix*2;
+    int dy = iy*2;
+    int sx = ix * src_stride.x;
+    int sy = iy * src_stride.y;
 
     float sum00=0.0;
     float sum01=0.0;

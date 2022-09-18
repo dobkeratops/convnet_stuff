@@ -514,6 +514,7 @@ struct NeuralNet::Node {
     Buffer<float> activations;
     std::shared_ptr<Kernel> kernel;
     Int3 output_dilation=Int3(1,1,1);
+    Int3 output_block=Int3(1,1,1);
     
     // todo: smallvector, node inptu counts are 0,1,2
     const char* kernel_name() const{return kernel?kernel->name.c_str():"";}
@@ -607,17 +608,15 @@ void NeuralNet::eval() {
         }
         node->eval();
     }
-    
-
-
 }
 
 int NeuralNet::Node::set_kernel_buffer_args(){
     assert(this->kernel!=nullptr);
     // conventoin expected by kernel code: first arg is destination
     // alternate buffer and shape data
-    this->kernel->set_arg(0, this->activations.padding);
-    const int num_preceeding_args=1;
+    this->kernel->set_arg(0, this->activations.padding);// dest offset - skips the padding
+    this->kernel->set_arg(1, Int4(1,1,1,0));            // dest stride
+    const int num_preceeding_args=2;
     this->kernel->set_arg_buffer_shape(num_preceeding_args,this->activations);
     // then list sources
     for (size_t i=0; i<this->inputs.size(); i++) {
@@ -625,7 +624,7 @@ int NeuralNet::Node::set_kernel_buffer_args(){
     }
     // kernel custom args follow
     return num_preceeding_args+(1+this->inputs.size())*2;
-    
+  
 }
 bool can_inc_dim(int current, int max){
     return ((current*2) <=max) && (max %(current*2))==0;
@@ -660,7 +659,7 @@ void NeuralNet::Node::eval() {
     // todo - tweaking of ß
     assert(this->activations.shape.w==1 && "node sizes must be 3d");
     
-    auto worksize=this->activations.shape.xyz()/this->output_dilation;
+    auto worksize=this->activations.shape.xyz()/(this->output_dilation*this->output_block);
     auto grpsize=get_workgroup_size_for(worksize);
     // 
     if (worksize.z% grpsize.z!=0) {
@@ -674,6 +673,8 @@ void NeuralNet::Node::eval() {
 }
 
 NeuralNet::Node::~Node() {assert(this->net==0 && "must only be manipulated by owning NeuralNet, dont store on stack etc");printf("destructing node %d\n",this->index);}
+
+const bool use_blocks=false; // select simple convolution implementation or method which outputs multilpe pixels & channels to reduce mem reads
 
 class Conv2d : public NeuralNet::Node{
     Buffer<float> filter;
@@ -696,46 +697,25 @@ class Conv2d : public NeuralNet::Node{
         dst->fmadds+=(size_t)filter.shape.hmul() * (size_t)activations.shape.x* (size_t)activations.shape.y;
     }
 public:    
-    Conv2d(NeuralNet* owner, int _input, Int2 _size, int _channels_out, int _stride=1,float _negf=0.0f) :Node(owner,"conv2d_nhwc",_input), stride(_stride,_stride),negfactor(_negf){
+    Conv2d(NeuralNet* owner, int _input_rel_index, Int2 _filter_size, int _channels_out, int _stride,int dilate, float leaky_relu=0.0f) :
+        Node(owner,
+            dilate>=2?"deconv_xy_2x_nhwc":use_blocks?"conv2d_nhwc_block2x2x4":"conv2d_nhwc",
+            _input_rel_index),
+        stride(_stride,_stride),
+        negfactor(leaky_relu)
+        
+    {
+        this->output_dilation=Int3(dilate,dilate,1);
+        // tested conv2d_nhwc_block2x2x4 .. its no faster.
+        this->output_block=(dilate==1&&use_blocks)?Int3(2,2,4):Int3(1,1,1);
         
         auto inp=input_node(0);
         int input_channels=inp->channels();
         assert(
             (input_channels &3)==0 && 
             (_channels_out&3)==0 && "channel sizes must be multiple of 4, use RGBA etc.");
-        this->set_size( Int3(inp->width()/stride.x,inp->height()/stride.y, _channels_out) );
-        filter.init_random(Int4(_size.x,_size.y, input_channels,_channels_out));
-    }
-};
-
-//todo rename DILATED convolution.
-class ConvDilated2x : public NeuralNet::Node{
-    Buffer<float> filter;
-    const char* name() const override{return "ConvDilated2x";};
-    float negfactor=0.0f;
-    void dump_extra() override {
-        printf("\t\t\"filter_shape\":[%d,%d,%d,%d],\n",filter.shape.x,filter.shape.y,filter.shape.z,filter.shape.w);
-    }
-    void set_extra_args(int argid) override{
-
-        this->kernel->set_arg_buffer_shape(argid,filter);
-        this->kernel->set_arg(argid+2, this->negfactor);
-    }
-    void estimate_cost(NeuralNet::Cost* dst) const override {
-        dst->parameters+=filter.shape.hmul();
-        dst->fmadds+=filter.shape.hmul() * activations.shape.x* activations.shape.y / 4;
-    }
-public:    
-
-    ConvDilated2x(NeuralNet* owner, int _input, Int2 _filter_size, int _channels_out, float _negf=0.0f) :Node(owner,"deconv_xy_2x_nhwc",_input), negfactor(_negf){
-        assert((_filter_size.x&1)==0 && (_filter_size.y&1)==0 && "filter be multiple of 2");
-        assert(_filter_size.x==6 && "we use hardcoded 3xdilation2= 6x6 kernel optimized unrolled loop");
-        auto inp=input_node(0);
-        int input_channels=inp->channels();
-        assert((input_channels &3)==0 && (_channels_out&3)==0 && "channel sizes must be multiple of 4, use RGBA etc.");
-        this->output_dilation=Int3(2,2,1);
-        this->set_size( output_dilation*Int3(inp->width(),inp->height(), _channels_out) );
-        filter.init_random(Int4(_filter_size.x,_filter_size.y, input_channels,_channels_out));
+        this->set_size( this->output_dilation*Int3(inp->width()/stride.x,inp->height()/stride.y, _channels_out) );
+        filter.init_random(Int4(_filter_size.x*dilate,_filter_size.y*dilate, input_channels,_channels_out));
     }
 };
 
@@ -848,9 +828,9 @@ std::unique_ptr<NeuralNet> make_convnet_trivial_edgedetector() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
     new InputImage(net, Int3(256,256,4));
-    new Conv2d(net,-1 , Int2(3,3), 4, 1);
+    new Conv2d(net,-1 , Int2(3,3), 4, 1,1);
     //new AvPool2x2(net);
-    //new ConvDilated2x(net,-1 , Int2(6,6), 4);
+    //new Conv2d(net,-1 , Int2(6,6), 4, 1,2);
     return thenet;
 }
 
@@ -860,23 +840,30 @@ std::unique_ptr<NeuralNet> make_convnet_example() {
 
     new InputImage(net, Int3(256,256,4));
 
-    new Conv2d(net,-1 , Int2(3,3), 16, 1); 
-    new Conv2d(net,-1 , Int2(3,3), 24, 2);  // stride 2 to downsample->128x128
-    new Conv2d(net,-1 , Int2(3,3), 32, 1);
-    new Conv2d(net,-1 , Int2(3,3), 32, 2);  // 64x64 x 32
-    new Conv2d(net,-1 , Int2(3,3), 64, 1);
-    new Conv2d(net,-1 , Int2(3,3), 64, 2);  // 32x32 x 64
-    new Conv2d(net,-1 , Int2(3,3), 128, 1);
-    new Conv2d(net,-1 , Int2(3,3), 128, 2); // -> 16x16 x 128
-    new Conv2d(net,-1 , Int2(3,3), 256, 1); // 16x16 x 256 = deepest latent representation
-    new ConvDilated2x(net,-1 , Int2(6,6), 128); // now deconvs expand (=dilated convolution)
-    new ConvDilated2x(net,-1 , Int2(6,6), 128);
-    new ConvDilated2x(net,-1 , Int2(6,6), 64);
-    new ConvDilated2x(net,-1 , Int2(6,6), 32);
+    new Conv2d(net,-1 , Int2(3,3), 16, 1, 1); 
+    new Conv2d(net,-1 , Int2(3,3), 24, 2, 1);  // stride 2 to downsample->128x128
+    new Conv2d(net,-1 , Int2(3,3), 32, 1, 1 );
     
-    new ConvDilated2x(net,-1 , Int2(6,6), 16);
-    new ConvDilated2x(net,-1 , Int2(6,6), 4);
+    new Conv2d(net,-1 , Int2(3,3), 32, 2, 1);  // 64x64 x 32
+    
+    
+    new Conv2d(net,-1 , Int2(3,3), 64, 1, 1);
+    
+    new Conv2d(net,-1 , Int2(3,3), 64, 2, 1);  // 32x32 x 64
+    
+    
+    new Conv2d(net,-1 , Int2(3,3), 128, 1, 1);
+    
+    new Conv2d(net,-1 , Int2(3,3), 128, 2, 1); // -> 16x16 x 128
+    
+    new Conv2d(net,-1 , Int2(3,3), 256, 1, 1); // 16x16 x 256 = deepest latent representation
 
+    new Conv2d(net, -1, Int2(3,3), 128, 1, 2);
+    new Conv2d(net, -1, Int2(3,3), 128, 1, 2);
+    new Conv2d(net, -1, Int2(3,3), 64, 1, 2);
+    new Conv2d(net, -1, Int2(3,3), 32, 1, 2);
+    new Conv2d(net, -1, Int2(3,3), 16, 1, 2);
+    new Conv2d(net, -1, Int2(3,3), 4, 1, 2);
     return thenet;
 }
 
@@ -996,19 +983,19 @@ void copy_sdl_surface_from_buffer(SDL_Surface* sfc, int x0,int y0, int w,int h, 
             
         }
     }
-
 }
+
 void run_neural_net_test(SDL_Surface* input) {
-    bool which =false;
+    bool which =false;;
     auto net = which?make_convnet_trivial_edgedetector():make_convnet_example();
     
 
     fill_buffer_from_sdl_surface(net->first_node()->activations, input);
 
     run_window_main_loop([&](SDL_Surface* sfc, int frame) {
+
         
         net->eval();
-        
         
         NeuralNet::Node* last=net->last_node();
         NeuralNet::Node* first=net->first_node();
