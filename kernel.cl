@@ -541,45 +541,35 @@ __kernel void dilated_conv_xy_2x_nhwc(
     for (int ky=0; ky<filter_shape.y; ky+=2){
         for (int kx=0; kx<filter_shape.x; kx+=2) {
             int si = lin_index_nhwc(src_shape, sx+kx/2, sy+ky/2, 0);
-            /*
-            int fi00 = lin_index_nhwc(filter_shape, kx, ky, 0+layerofs);
-            int fi10 = lin_index_nhwc(filter_shape, kx+1, ky, 0+layerofs);
-            int fi01 = lin_index_nhwc(filter_shape, kx, ky+1, 0+layerofs);
-            int fi11 = lin_index_nhwc(filter_shape, kx+1, ky+1, 0+layerofs);
-            */
             struct int2x2 fi = lin_index_nhwc_2x2(filter_shape, kx, ky, 0+layerofs);
-            int fi00=fi.m00;
-            int fi01=fi.m01;
-            int fi10=fi.m10;
-            int fi11=fi.m11;
 
             int kz=0;
 
-            for (; (kz+4)<=filter_shape.z; kz+=4, si+=4,fi00+=4,fi01+=4,fi10+=4,fi11+=4) {
+            for (; (kz+4)<=filter_shape.z; kz+=4, si+=4,fi.m00+=4,fi.m01+=4,fi.m10+=4,fi.m11+=4) {
                 float s0=src[si];
                 float s1=src[si+1];
                 float s2=src[si+2];
                 float s3=src[si+3];
 
-                sum00+=s0*filter[fi00];
-                sum00+=s1*filter[fi00+1];
-                sum00+=s2*filter[fi00+2];
-                sum00+=s3*filter[fi00+3];
+                sum00+=s0*filter[fi.m00];
+                sum00+=s1*filter[fi.m00+1];
+                sum00+=s2*filter[fi.m00+2];
+                sum00+=s3*filter[fi.m00+3];
 
-                sum10+=s0*filter[fi10];
-                sum10+=s1*filter[fi10+1];
-                sum10+=s2*filter[fi10+2];
-                sum10+=s3*filter[fi10+3];
+                sum10+=s0*filter[fi.m10];
+                sum10+=s1*filter[fi.m10+1];
+                sum10+=s2*filter[fi.m10+2];
+                sum10+=s3*filter[fi.m10+3];
 
-                sum01+=s0*filter[fi01];
-                sum01+=s1*filter[fi01+1];
-                sum01+=s2*filter[fi01+2];
-                sum01+=s3*filter[fi01+3];
+                sum01+=s0*filter[fi.m01];
+                sum01+=s1*filter[fi.m01+1];
+                sum01+=s2*filter[fi.m01+2];
+                sum01+=s3*filter[fi.m01+3];
 
-                sum11+=s0*filter[fi11];
-                sum11+=s1*filter[fi11+1];
-                sum11+=s2*filter[fi11+2];
-                sum11+=s3*filter[fi11+3];
+                sum11+=s0*filter[fi.m11];
+                sum11+=s1*filter[fi.m11+1];
+                sum11+=s2*filter[fi.m11+2];
+                sum11+=s3*filter[fi.m11+3];
 
             }
         }        
