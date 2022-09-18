@@ -699,12 +699,13 @@ class Conv2d : public NeuralNet::Node{
 public:    
     Conv2d(NeuralNet* owner, int _input_rel_index, Int2 _filter_size, int _channels_out, int _stride,int dilate, float leaky_relu=0.0f) :
         Node(owner,
-            dilate>=2?"deconv_xy_2x_nhwc":use_blocks?"conv2d_nhwc_block2x2x4":"conv2d_nhwc",
+            dilate>=2?"dilated_conv_xy_2x_nhwc":use_blocks?"conv2d_nhwc_block2x2x4":"conv2d_nhwc",
             _input_rel_index),
         stride(_stride,_stride),
         negfactor(leaky_relu)
         
     {
+        assert(_stride==1 || dilate==1);
         this->output_dilation=Int3(dilate,dilate,1);
         // tested conv2d_nhwc_block2x2x4 .. its no faster.
         this->output_block=(dilate==1&&use_blocks)?Int3(2,2,4):Int3(1,1,1);
@@ -842,6 +843,7 @@ std::unique_ptr<NeuralNet> make_convnet_example() {
 
     new Conv2d(net,-1 , Int2(3,3), 16, 1, 1); 
     new Conv2d(net,-1 , Int2(3,3), 24, 2, 1);  // stride 2 to downsample->128x128
+    
     new Conv2d(net,-1 , Int2(3,3), 32, 1, 1 );
     
     new Conv2d(net,-1 , Int2(3,3), 32, 2, 1);  // 64x64 x 32
@@ -851,19 +853,27 @@ std::unique_ptr<NeuralNet> make_convnet_example() {
     
     new Conv2d(net,-1 , Int2(3,3), 64, 2, 1);  // 32x32 x 64
     
+    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
+    new Conv2d(net,-1 , Int2(3,3), 96, 1, 1);
     
-    new Conv2d(net,-1 , Int2(3,3), 128, 1, 1);
+    new Conv2d(net,-1 , Int2(3,3), 96, 2, 1); // -> 16x16 x 128
+    //new Conv2d(net,-1 , Int2(1,1), 32, 1, 1);
     
-    new Conv2d(net,-1 , Int2(3,3), 128, 2, 1); // -> 16x16 x 128
-    
-    new Conv2d(net,-1 , Int2(3,3), 256, 1, 1); // 16x16 x 256 = deepest latent representation
+    new Conv2d(net,-1 , Int2(3,3), 128, 1, 1); // 16x16 x 256 = deepest latent representation
 
+    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
     new Conv2d(net, -1, Int2(3,3), 128, 1, 2);
-    new Conv2d(net, -1, Int2(3,3), 128, 1, 2);
+    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
+    new Conv2d(net, -1, Int2(3,3), 96, 1, 2);
+    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1 , 1.0);
     new Conv2d(net, -1, Int2(3,3), 64, 1, 2);
+    
     new Conv2d(net, -1, Int2(3,3), 32, 1, 2);
+    
     new Conv2d(net, -1, Int2(3,3), 16, 1, 2);
+    
     new Conv2d(net, -1, Int2(3,3), 4, 1, 2);
+    
     return thenet;
 }
 

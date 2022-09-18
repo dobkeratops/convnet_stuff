@@ -20,6 +20,19 @@ int lin_index_nhwc(int4 shape, int x,int y,int z){
     return z+shape.z*(x + shape.x* y);
 }
 
+struct int2x2 { int m00,m01, m10, m11};
+
+struct int2x2 lin_index_nhwc_2x2(int4 shape, int x,int y,int z){
+    
+    struct int2x2 ret;
+    ret.m00= z + shape.z*(x + shape.x* y);
+    ret.m10= ret.m00 + shape.z;
+    ret.m01= ret.m00 + shape.z*shape.x;
+    ret.m11 = ret.m01 + shape.z;
+    return ret;  
+}
+
+
 float get3df(__global const float* src, int4 srcshape, int x,int y,int z) {
     return src[x + srcshape.x*(y  + srcshape.y * z)];
 }
@@ -497,7 +510,7 @@ __kernel void deconv_xy_2x_planar(
     dst[di+dst_shape.x+1]=sum11;
 }
 
-__kernel void deconv_xy_2x_nhwc(
+__kernel void dilated_conv_xy_2x_nhwc(
         int4  dstofs,int4 dststride,
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
@@ -518,32 +531,56 @@ __kernel void deconv_xy_2x_nhwc(
     int sy = iy * src_stride.y;
 
     float sum00=0.0;
-    float sum01=0.0;
     float sum10=0.0;
+    float sum01=0.0;
     float sum11=0.0;
+
 
     int layerofs = dst_channel * filter_shape.z;
         
     for (int ky=0; ky<filter_shape.y; ky+=2){
         for (int kx=0; kx<filter_shape.x; kx+=2) {
             int si = lin_index_nhwc(src_shape, sx+kx/2, sy+ky/2, 0);
-            
+            /*
             int fi00 = lin_index_nhwc(filter_shape, kx, ky, 0+layerofs);
-            int fi01 = lin_index_nhwc(filter_shape, kx+1, ky, 0+layerofs);
-            int fi10 = lin_index_nhwc(filter_shape, kx, ky+1, 0+layerofs);
+            int fi10 = lin_index_nhwc(filter_shape, kx+1, ky, 0+layerofs);
+            int fi01 = lin_index_nhwc(filter_shape, kx, ky+1, 0+layerofs);
             int fi11 = lin_index_nhwc(filter_shape, kx+1, ky+1, 0+layerofs);
+            */
+            struct int2x2 fi = lin_index_nhwc_2x2(filter_shape, kx, ky, 0+layerofs);
+            int fi00=fi.m00;
+            int fi01=fi.m01;
+            int fi10=fi.m10;
+            int fi11=fi.m11;
 
-            int kz=0;            
+            int kz=0;
+
             for (; (kz+4)<=filter_shape.z; kz+=4, si+=4,fi00+=4,fi01+=4,fi10+=4,fi11+=4) {
- 
-            } 
-            
-            for (; kz<=filter_shape.z; kz+=1) {
-                float s=src[lin_index_nhwc(src_shape, sx+kx/2, sy+ky/2, kz)];
-                sum00+=s*filter[lin_index_nhwc(filter_shape, kx, ky, kz+layerofs)];
-                sum01+=s*filter[lin_index_nhwc(filter_shape, kx+1, ky, kz+layerofs)];
-                sum10+=s*filter[lin_index_nhwc(filter_shape, kx, ky+1, kz+layerofs)];
-                sum11+=s*filter[lin_index_nhwc(filter_shape, kx+1, ky+1, kz+layerofs)];
+                float s0=src[si];
+                float s1=src[si+1];
+                float s2=src[si+2];
+                float s3=src[si+3];
+
+                sum00+=s0*filter[fi00];
+                sum00+=s1*filter[fi00+1];
+                sum00+=s2*filter[fi00+2];
+                sum00+=s3*filter[fi00+3];
+
+                sum10+=s0*filter[fi10];
+                sum10+=s1*filter[fi10+1];
+                sum10+=s2*filter[fi10+2];
+                sum10+=s3*filter[fi10+3];
+
+                sum01+=s0*filter[fi01];
+                sum01+=s1*filter[fi01+1];
+                sum01+=s2*filter[fi01+2];
+                sum01+=s3*filter[fi01+3];
+
+                sum11+=s0*filter[fi11];
+                sum11+=s1*filter[fi11+1];
+                sum11+=s2*filter[fi11+2];
+                sum11+=s3*filter[fi11+3];
+
             }
         }        
     }
@@ -554,9 +591,12 @@ __kernel void deconv_xy_2x_nhwc(
     if (sum11<0.0) {sum11*=negfactor;}
 
     //todo 2x2 block write
-    dst[lin_index_nhwc(dst_shape, dx,  dy,  dst_channel)] = sum00;
-    dst[lin_index_nhwc(dst_shape, dx+1,dy,  dst_channel)] = sum01;
-    dst[lin_index_nhwc(dst_shape, dx,  dy+1,dst_channel)] = sum10;
-    dst[lin_index_nhwc(dst_shape, dx+1,dy+1,dst_channel)] = sum11;
+    struct int2x2 di=lin_index_nhwc_2x2(dst_shape, dx,  dy,  dst_channel);
+
+    dst[di.m00] = sum00;
+    dst[di.m10] = sum10;
+    dst[di.m01] = sum01;
+    dst[di.m11] = sum11;
+
 }
 
