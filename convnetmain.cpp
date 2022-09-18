@@ -708,7 +708,7 @@ public:
         assert(_stride==1 || dilate==1);
         this->output_dilation=Int3(dilate,dilate,1);
         // tested conv2d_nhwc_block2x2x4 .. its no faster.
-        this->output_block=(dilate==1&&use_blocks)?Int3(2,2,4):Int3(1,1,1);
+        this->output_block=(dilate==1&&use_blocks)?Int3(4,4,4):Int3(1,1,1);
         
         auto inp=input_node(0);
         int input_channels=inp->channels();
@@ -873,7 +873,7 @@ std::unique_ptr<NeuralNet> make_convnet_example() {
     new Conv2d(net, -1, Int2(3,3), 16, 1, 2);
     
     new Conv2d(net, -1, Int2(3,3), 4, 1, 2);
-    
+     
     return thenet;
 }
 

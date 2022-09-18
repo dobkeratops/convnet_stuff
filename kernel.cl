@@ -20,6 +20,12 @@ int lin_index_nhwc(int4 shape, int x,int y,int z){
     return z+shape.z*(x + shape.x* y);
 }
 
+float leaky_relu(float x, float f){return x<0.0f?(x*f):x;}
+
+float4 leaky_relu4(float4 v,float f) {
+    return (float4)(leaky_relu(v.x,f),leaky_relu(v.y,f),leaky_relu(v.z,f),leaky_relu(v.w,f));
+}
+
 struct int2x2 { int m00,m01, m10, m11};
 
 struct int2x2 lin_index_nhwc_2x2(int4 shape, int x,int y,int z){
@@ -29,6 +35,17 @@ struct int2x2 lin_index_nhwc_2x2(int4 shape, int x,int y,int z){
     ret.m10= ret.m00 + shape.z;
     ret.m01= ret.m00 + shape.z*shape.x;
     ret.m11 = ret.m01 + shape.z;
+    return ret;  
+}
+
+struct int2x2 lin_index_nhwc_2x2_simd4(int4 shape, int x,int y,int z){
+    
+    struct int2x2 ret;
+    int szdiv4=shape.z/4;
+    ret.m00= z + szdiv4*(x + shape.x* y);
+    ret.m10= ret.m00 + szdiv4;
+    ret.m01= ret.m00 + szdiv4*shape.x;
+    ret.m11 = ret.m01 + szdiv4;
     return ret;  
 }
 
@@ -588,5 +605,121 @@ __kernel void dilated_conv_xy_2x_nhwc(
     dst[di.m01] = sum01;
     dst[di.m11] = sum11;
 
+}
+
+
+__kernel void dilated_conv_xy_2x_block2x_nhwc(
+        int4  dstofs,int4 dststride,
+        __global val_t* dst,                 // 3d array wdith,height, dstchannels
+        int4 dst_shape,
+        __global const val4_t* src,  // 3d array width,height,srcchannels
+        int4 src_shape,
+        __constant const val4_t* filter, // 4D array, width,height,srcchannels,dstchannels
+        int4 filter_shape,
+        int2 src_stride,
+        float negfactor)    // set 0.0 for relu, 1.0 for nothing, 0.1 for modified relu
+{
+    int ix=get_global_id(0); // dest x
+    int iy=get_global_id(1); // dest y
+    int dst_channel=get_global_id(2); // dest channel
+
+    int dx = ix*4;
+    int dy = iy*4;
+    int sx = ix * src_stride.x*2;
+    int sy = iy * src_stride.y*2;
+
+    float4 sum[4]={float4(0.0f),float4(0.0f),float4(0.0f),float4(0.0f)};
+
+    int layerofs = dst_channel * filter_shape.z;
+        
+    for (int ky=0; ky<filter_shape.y; ky+=2){
+        for (int kx=0; kx<filter_shape.x; kx+=2) {
+
+            int sz4=src_shape.z/4;
+            struct int2x2 si;
+
+            si.m00 = sz4*((sx+kx/2)+src_shape.x*(sy+ky/2));
+            si.m10 = si.m00 + sz4;
+            si.m01 = si.m00 + sz4+src_shape.x;
+            si.m11 = si.m01 + sz4;
+
+            struct int2x2 fi;  //=lin_index_nhwc_2x2(filter_shape, kx, ky, 0+layerofs);
+            int fsz4=filter_shape.z/4;
+            
+            fi.m00=(layerofs/4) + fsz4*(kx + filter_shape.x*ky);
+            fi.m01=fi.m00 + fsz4;
+            fi.m10=fi.m00 + fsz4 * filter_shape.x;
+            fi.m11=fi.m10 + fsz4;
+
+            int kz=0;
+
+            for (; kx<=filter_shape.z; kz+=4, si.m00+=1,si.m01+=1, si.m10+=1, si.m11+=1, fi.m00+=1,fi.m01+=1,fi.m10+=1,fi.m11+=1) {
+
+                float4 s00=src[si.m00];
+                float4 s10=src[si.m10];
+                float4 s01=src[si.m01];
+                float4 s11=src[si.m11];
+
+                float4 f00 = filter[fi.m00];
+                float4 f10 = filter[fi.m10];
+                float4 f01 = filter[fi.m01];
+                float4 f11 = filter[fi.m11];
+
+                // caution!           
+                //sum[y][x]..    sxy  fxy
+                
+                sum[0][0] += dot(s00, f00);
+                sum[0][1] += dot(s00, f10); 
+                sum[0][2] += dot(s10, f00);
+                sum[0][3] += dot(s10, f10); 
+
+                sum[1][0] += dot(s00, f01);
+                sum[1][1] += dot(s00, f11); 
+                sum[1][2] += dot(s10, f01);
+                sum[1][3] += dot(s10, f11); 
+
+                sum[2][0] += dot(s01, f00);
+                sum[2][1] += dot(s01, f10); 
+                sum[2][2] += dot(s11, f00);
+                sum[2][3] += dot(s11, f10); 
+
+                sum[3][0] += dot(s01, f01);
+                sum[3][1] += dot(s01, f11); 
+                sum[3][2] += dot(s11, f01);
+                sum[3][3] += dot(s11, f11); 
+          }
+
+        }        
+        
+    }
+
+    sum[0]=leaky_relu4(sum[0],negfactor);
+    sum[1]=leaky_relu4(sum[1],negfactor);
+    sum[2]=leaky_relu4(sum[2],negfactor);
+    sum[3]=leaky_relu4(sum[3],negfactor);
+
+
+    //todo 2x2 block write
+    int dsz4=dst_shape.z/4;
+    //struct int di=//lin_index_nhwc_2x2_simd4(dst_shape, dx,  dy,  dst_channel)
+    int di = dst_channel + dsz4*(dx + dy*dst_shape.x);
+    int dst_row=dsz4*dst_shape.x;
+
+    dst[di] = sum[0][0]; di+=dsz4;
+    dst[di] = sum[0][1];  di+=dsz4;
+    dst[di] = sum[0][2]; di+=dsz4;
+    dst[di] = sum[0][3]; di+=dsz4 + dst_row-(dsz4*4);
+    dst[di] = sum[1][0]; di+=dsz4;
+    dst[di] = sum[1][1];  di+=dsz4;
+    dst[di] = sum[1][2]; di+=dsz4;
+    dst[di] = sum[1][3]; di+=dsz4 + dst_row-(dsz4*4);
+    dst[di] = sum[2][0]; di+=dsz4;
+    dst[di] = sum[2][1];  di+=dsz4;
+    dst[di] = sum[2][2]; di+=dsz4;
+    dst[di] = sum[2][3]; di+=dsz4 + dst_row-(dsz4*4);
+    dst[di] = sum[3][0]; di+=dsz4;
+    dst[di] = sum[3][1];  di+=dsz4;
+    dst[di] = sum[3][2]; di+=dsz4;
+    dst[di] = sum[3][3]; di+=dsz4 + dst_row-(dsz4*4);
 }
 
