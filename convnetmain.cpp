@@ -721,8 +721,6 @@ public:
     }
 };
 
-
-
 class FullyConnected : public NeuralNet::Node {
     Buffer<float> matrix_weights;
     const char* name() const override{return "FullyConnected";};
