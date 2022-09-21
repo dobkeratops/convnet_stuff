@@ -6,6 +6,11 @@ inline val_t vec4hadd(val4_t a){
     return (a.x+a.y)+(a.z+a.w);
 }
 
+// crude retrofitable tiling, 4x4 , doesn't need to know whole size TODO more elegane totalsize aware alternative
+// .. no effect, so disabled.
+#define DETILE(X,Y) //{const int tsize=1;int tx=X/tsize; int ty=Y/tsize; int subx=X&(tsize-1); int suby=Y&(tsize-1); X=tx*tsize+suby; Y=ty*tsize+subx;}
+
+
 __kernel void vector_add(__global float *dst, __global const float *src0, __global const float *src1) {
     int i = get_global_id(0);					
     dst[i] = src0[i]+ src1[i];
@@ -120,6 +125,7 @@ __kernel void vector_add_scaled(__global float *dst, __global const float *src0,
     dst[i] = src0[i]*f0 + src1[i]*f1;
 }
 
+
 __kernel void vector_clamp(__global float *dst, __global const float *src0,  float fmin,float fmax) {
     int i = get_global_id(0);
     float f=src0[i];
@@ -157,6 +163,8 @@ __kernel void conv2d_planar(
 {
     int ix=get_global_id(0); // dest x
     int iy=get_global_id(1); // dest y
+    
+    DETILE(ix,iy);
     int dst_channel=get_global_id(2); // dest channel
 
     int sx = ix*src_stride.x;
@@ -189,9 +197,8 @@ __kernel void conv2d_planar(
             
         }        
     }
-    if (sum<0.0) {sum*=negfactor;}
 
-    set3df(dst, dst_shape, ix,iy,dst_channel, sum);
+    set3df(dst, dst_shape, ix,iy,dst_channel, leaky_relu(sum,negfactor));
 }
 
 __kernel void conv2d_nhwc(
@@ -207,6 +214,7 @@ __kernel void conv2d_nhwc(
 {
     int ix=get_global_id(0); // dest x
     int iy=get_global_id(1); // dest y
+    DETILE(ix,iy);
     int dst_channel=get_global_id(2); // dest channel
 
     int sx = ix*src_stride.x;
@@ -240,9 +248,8 @@ __kernel void conv2d_nhwc(
             }
         }        
     }
-    if (sum<0.0) {sum*=negfactor;}
 
-    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, sum);
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, leaky_relu(sum,negfactor));
 }
 
 __kernel void conv2d_nhwc_block2x2x4(
@@ -259,6 +266,7 @@ __kernel void conv2d_nhwc_block2x2x4(
     
     int ix=get_global_id(0)*2; // dest x
     int iy=get_global_id(1)*2; // dest y
+    DETILE(ix,iy);
     int dst_channel=get_global_id(2)*4; // dest channel
 
     int sx = ix*src_stride.x;
@@ -337,43 +345,26 @@ __kernel void conv2d_nhwc_block2x2x4(
             }
         }        
     }
-    
-    if (sum000<0.0) {sum000*=negfactor;}
-    if (sum100<0.0) {sum100*=negfactor;}
-    if (sum010<0.0) {sum010*=negfactor;}
-    if (sum110<0.0) {sum110*=negfactor;}
-    if (sum001<0.0) {sum001*=negfactor;}
-    if (sum101<0.0) {sum101*=negfactor;}
-    if (sum011<0.0) {sum011*=negfactor;}
-    if (sum111<0.0) {sum111*=negfactor;}
-    if (sum002<0.0) {sum002*=negfactor;}
-    if (sum102<0.0) {sum102*=negfactor;}
-    if (sum012<0.0) {sum012*=negfactor;}
-    if (sum112<0.0) {sum112*=negfactor;}
-    if (sum003<0.0) {sum003*=negfactor;}
-    if (sum103<0.0) {sum103*=negfactor;}
-    if (sum013<0.0) {sum013*=negfactor;}
-    if (sum113<0.0) {sum113*=negfactor;}
 
-    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, sum000);
-    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel, sum010);
-    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel, sum100);
-    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel, sum110);
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel, leaky_relu(sum000,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel, leaky_relu(sum010,negfactor));
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel, leaky_relu(sum100,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel, leaky_relu(sum110,negfactor));
 
-    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+1, sum001);
-    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+1, sum011);
-    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+1, sum101);
-    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+1, sum111);
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+1, leaky_relu(sum001,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+1, leaky_relu(sum011,negfactor));
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+1, leaky_relu(sum101,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+1, leaky_relu(sum111,negfactor));
 
-    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+2, sum002);
-    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+2, sum012);
-    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+2, sum102);
-    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+2, sum112);
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+2, leaky_relu(sum002,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+2, leaky_relu(sum012,negfactor));
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+2, leaky_relu(sum102,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+2, leaky_relu(sum112,negfactor));
 
-    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+3, sum003);
-    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+3, sum013);
-    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+3, sum103);
-    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+3, sum113);
+    set3df_nhwc(dst, dst_shape, ix,iy,dst_channel+3, leaky_relu(sum003,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy,dst_channel+3, leaky_relu(sum013,negfactor));
+    set3df_nhwc(dst, dst_shape, ix,iy+1,dst_channel+3, leaky_relu(sum103,negfactor));
+    set3df_nhwc(dst, dst_shape, ix+1,iy+1,dst_channel+3, leaky_relu(sum113,negfactor));
     
 }
 
@@ -391,6 +382,7 @@ __kernel void deconv_xy_2x_planar_unopt(
 {
     int sx=get_global_id(0); // dest x
     int sy=get_global_id(1); // dest y
+    DETILE(sx,sy);
     int dst_channel=get_global_id(2); // dest channel
 
     int dx = sx*2;
@@ -434,16 +426,11 @@ __kernel void deconv_xy_2x_planar_unopt(
             
         }        
     }
-    if (sum00<0.0) {sum00*=negfactor;}
-    if (sum01<0.0) {sum01*=negfactor;}
-    if (sum10<0.0) {sum10*=negfactor;}
-    if (sum11<0.0) {sum11*=negfactor;}
-
     //todo 2x2 block write
-    set3df(dst, dst_shape, dx,  dy,  dst_channel, sum00);
-    set3df(dst, dst_shape, dx+1,dy,  dst_channel, sum01);
-    set3df(dst, dst_shape, dx,  dy+1,dst_channel, sum10);
-    set3df(dst, dst_shape, dx+1,dy+1,dst_channel, sum11);
+    set3df(dst, dst_shape, dx,  dy,  dst_channel, leaky_relu(sum00,negfactor));
+    set3df(dst, dst_shape, dx+1,dy,  dst_channel, leaky_relu(sum01,negfactor));
+    set3df(dst, dst_shape, dx,  dy+1,dst_channel, leaky_relu(sum10,negfactor));
+    set3df(dst, dst_shape, dx+1,dy+1,dst_channel, leaky_relu(sum11,negfactor));
 
 }
 __kernel void deconv_xy_2x_planar(
@@ -458,6 +445,7 @@ __kernel void deconv_xy_2x_planar(
 {
     int sx=get_global_id(0); // dest x
     int sy=get_global_id(1); // dest y
+    DETILE(sx,sy);
     int dst_channel=get_global_id(2); // dest channel
 
     //int lx=get_local_id(0),ly=get_local_id(1);
@@ -513,18 +501,14 @@ __kernel void deconv_xy_2x_planar(
         }        
     }
  
-    if (sum00<0.0) {sum00*=negfactor;}
-    if (sum01<0.0) {sum01*=negfactor;}
-    if (sum10<0.0) {sum10*=negfactor;}
-    if (sum11<0.0) {sum11*=negfactor;}
 
     //todo 2x2 block write
     
     int di=lin_index(dst_shape, dx,dy,dst_channel);
-    dst[di]=sum00;
-    dst[di+1]=sum01;
-    dst[di+dst_shape.x]=sum10;
-    dst[di+dst_shape.x+1]=sum11;
+    dst[di]=leaky_relu(sum00,negfactor);
+    dst[di+1]=leaky_relu(sum01,negfactor);
+    dst[di+dst_shape.x]=leaky_relu(sum10,negfactor);
+    dst[di+dst_shape.x+1]=leaky_relu(sum11,negfactor);
 }
 
 __kernel void dilated_conv_xy_2x_nhwc(
@@ -540,6 +524,7 @@ __kernel void dilated_conv_xy_2x_nhwc(
 {
     int ix=get_global_id(0); // dest x
     int iy=get_global_id(1); // dest y
+    DETILE(ix,iy);
     int dst_channel=get_global_id(2); // dest channel
 
     int dx = ix*2;
@@ -592,23 +577,19 @@ __kernel void dilated_conv_xy_2x_nhwc(
         }        
     }
 
-    if (sum00<0.0) {sum00*=negfactor;}
-    if (sum01<0.0) {sum01*=negfactor;}
-    if (sum10<0.0) {sum10*=negfactor;}
-    if (sum11<0.0) {sum11*=negfactor;}
 
     //todo 2x2 block write
     struct int2x2 di=lin_index_nhwc_2x2(dst_shape, dx,  dy,  dst_channel);
 
-    dst[di.m00] = sum00;
-    dst[di.m10] = sum10;
-    dst[di.m01] = sum01;
-    dst[di.m11] = sum11;
+    dst[di.m00] = leaky_relu(sum00,negfactor);
+    dst[di.m10] = leaky_relu(sum10,negfactor);
+    dst[di.m01] = leaky_relu(sum01,negfactor);
+    dst[di.m11] = leaky_relu(sum11,negfactor);
 
 }
 
-
-__kernel void dilated_conv_xy_2x_block2x_nhwc(
+//BROKEN,Sorry.
+__kernel void dilated_conv_xy_2x_nhwc_block2x2x1(
         int4  dstofs,int4 dststride,
         __global val_t* dst,                 // 3d array wdith,height, dstchannels
         int4 dst_shape,
@@ -621,6 +602,7 @@ __kernel void dilated_conv_xy_2x_block2x_nhwc(
 {
     int ix=get_global_id(0); // dest x
     int iy=get_global_id(1); // dest y
+    DETILE(ix,iy);
     int dst_channel=get_global_id(2); // dest channel
 
     int dx = ix*4;

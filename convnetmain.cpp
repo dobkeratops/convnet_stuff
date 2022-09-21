@@ -697,18 +697,19 @@ class Conv2d : public NeuralNet::Node{
         dst->fmadds+=(size_t)filter.shape.hmul() * (size_t)activations.shape.x* (size_t)activations.shape.y;
     }
 public:    
-    Conv2d(NeuralNet* owner, int _input_rel_index, Int2 _filter_size, int _channels_out, int _stride,int dilate, float leaky_relu=0.0f) :
+    Conv2d(NeuralNet* owner, int _input_rel_index, Int2 _filter_size, int _channels_out, int _stride,int dilate, float leaky_relu_factor=0.0f) :
         Node(owner,
             dilate>=2?"dilated_conv_xy_2x_nhwc":use_blocks?"conv2d_nhwc_block2x2x4":"conv2d_nhwc",
             _input_rel_index),
         stride(_stride,_stride),
-        negfactor(leaky_relu)
+        negfactor(leaky_relu_factor)
         
     {
         assert(_stride==1 || dilate==1);
+        assert(dilate==1 || dilate==2 && "unsupported dilation");
         this->output_dilation=Int3(dilate,dilate,1);
         // tested conv2d_nhwc_block2x2x4 .. its no faster.
-        this->output_block=(dilate==1&&use_blocks)?Int3(4,4,4):Int3(1,1,1);
+        this->output_block=(dilate==1)?Int3(2,2,1):use_blocks?Int3(2,2,4):Int3(1,1,1);
         
         auto inp=input_node(0);
         int input_channels=inp->channels();
@@ -795,16 +796,6 @@ public:
     }
 };
 
-// hacky, probably not useful.
-class Expand2x2 : public NeuralNet::Node {
-    const char* name() const override{return "Expand2x2";}
-public:
-    Expand2x2(NeuralNet* owner,int _input=-1) : Node(owner,"expand2x2",_input){
-        auto inp=input_node(0);
-        this->set_size( Int3(inp->width()*2,inp->height()*2,inp->channels()));
-    }
-};
-
 class FlattenToZ : public NeuralNet::Node {
     const char* name() const override{return "FlattenToZ";}
 public:
@@ -835,9 +826,14 @@ std::unique_ptr<NeuralNet> make_convnet_trivial_edgedetector() {
     return thenet;
 }
 
+
 std::unique_ptr<NeuralNet> make_convnet_example() {
     std::unique_ptr<NeuralNet> thenet= std::make_unique<NeuralNet>();
     NeuralNet* net=thenet.get();
+    int max_feature_depth = 128;
+    int reduced_input = 4;
+    int penultimate_depth= (max_feature_depth+64)/2;
+    auto reduce_input = [&](){if (net->last_node()->channels()>=64){new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);}};
 
     new InputImage(net, Int3(256,256,4));
 
@@ -848,27 +844,26 @@ std::unique_ptr<NeuralNet> make_convnet_example() {
     
     new Conv2d(net,-1 , Int2(3,3), 32, 2, 1);  // 64x64 x 32
     
+    reduce_input();
+    new Conv2d(net,-1 , Int2(3,3), max_feature_depth/2, 1, 1);
     
-    new Conv2d(net,-1 , Int2(3,3), 64, 1, 1);
+    new Conv2d(net,-1 , Int2(3,3), max_feature_depth/2, 2, 1);  // 32x32 x 64
+    reduce_input();
+    new Conv2d(net,-1 , Int2(3,3), penultimate_depth, 1, 1);
     
-    new Conv2d(net,-1 , Int2(3,3), 64, 2, 1);  // 32x32 x 64
+    new Conv2d(net,-1 , Int2(3,3), penultimate_depth, 2, 1); // -> 16x16 x 128
+    reduce_input();
     
-    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
-    new Conv2d(net,-1 , Int2(3,3), 96, 1, 1);
-    
-    new Conv2d(net,-1 , Int2(3,3), 96, 2, 1); // -> 16x16 x 128
-    //new Conv2d(net,-1 , Int2(1,1), 32, 1, 1);
-    
-    new Conv2d(net,-1 , Int2(3,3), 128, 1, 1); // 16x16 x 256 = deepest latent representation
+    new Conv2d(net,-1 , Int2(3,3), max_feature_depth, 1, 1); // 16x16 x 256 = deepest latent representation
 
-    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
-    new Conv2d(net, -1, Int2(3,3), 128, 1, 2);
-    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1, 1.0);
-    new Conv2d(net, -1, Int2(3,3), 96, 1, 2);
-    new Conv2d(net,-1 , Int2(1,1), 32, 1, 1 , 1.0);
-    new Conv2d(net, -1, Int2(3,3), 64, 1, 2);
-    
-    new Conv2d(net, -1, Int2(3,3), 32, 1, 2);
+    reduce_input();
+    new Conv2d(net, -1, Int2(3,3), penultimate_depth, 1, 2);
+    reduce_input();
+    new Conv2d(net, -1, Int2(3,3), penultimate_depth, 1, 2);
+    reduce_input();
+    new Conv2d(net, -1, Int2(3,3), max_feature_depth/2, 1, 2);
+    reduce_input();
+    new Conv2d(net, -1, Int2(3,3), max_feature_depth/2, 1, 2);
     
     new Conv2d(net, -1, Int2(3,3), 16, 1, 2);
     
