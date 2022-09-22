@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 import torch.nn.functional as F
 import psutil
+import sys,getopt
 
 import random
 import os
@@ -13,159 +14,6 @@ from PIL import Image,ImageDraw,ImageFont
 def debug(*a):
 	#print(*a)
 	pass
-
-class AutoencoderMessyDontUse(nn.Module):
-	# current working one,, but we lost control of these messy shortcut layers and optional dropout combined
-	def __init__(self):
-		self.shown=None
-		self.iter=0
-		self.nextshow=5
-		super().__init__()
-		self.conv1 = nn.Conv2d(3,16, kernel_size=3, stride=1,padding=1)
-		self.shrink1 = nn.Conv2d(16,16, kernel_size=2, stride=2,padding=0)
-		self.conv2 = nn.Conv2d(16,24, kernel_size=3, stride=1,padding=1)
-		self.shrink2 = nn.Conv2d(24,24, kernel_size=2, stride=2,padding=0)
-
-		self.conv3 = nn.Conv2d(24,32, kernel_size=3, stride=1,padding=1)
-		self.shrink3 = nn.Conv2d(32,32, kernel_size=2, stride=2,padding=0)
-
-		self.conv4 = nn.Conv2d(32,48, kernel_size=3, stride=1,padding=1)
-		self.shrink4 = nn.Conv2d(48,48, kernel_size=2, stride=2,padding=0)
-
-		self.conv5 = nn.Conv2d(48,64, kernel_size=3, stride=1,padding=1)
-		self.shrink5 = nn.Conv2d(64,64, kernel_size=2, stride=2,padding=0)
-
-		# dense reuse of early level
-		self.combine25 = nn.Conv2d(24,64, kernel_size=1, stride=1, padding=0)
-		self.combine50 = nn.Conv2d(64,3, kernel_size=1, stride=1, padding=0)
-		
-		self.combine53lo = nn.Conv2d(64,24, kernel_size=1, stride=1, padding=0)
-		self.combine53hi = nn.Conv2d(64,24, kernel_size=1, stride=1, padding=0)
-
-		inpad=0;outpad=0;groups=1
-
-		self.deconv5 = nn.ConvTranspose2d(64,64, 2,2,inpad,outpad,groups,True,2)
-		self.conv5up = nn.Conv2d(64,48, kernel_size=3, stride=1,padding=1)
-
-		self.deconv4 = nn.ConvTranspose2d(48,48, 2,2,inpad,outpad,groups,True,2)
-		self.conv4up = nn.Conv2d(48,32, kernel_size=3, stride=1,padding=1)
-
-		
-
-		
-		self.deconv3 = nn.ConvTranspose2d(32,32, 2,2,inpad,outpad,groups,True,2)
-		self.conv3up = nn.Conv2d(32,24, kernel_size=3, stride=1,padding=1)
-
-		self.deconv2 = nn.ConvTranspose2d(24,24, 2,2,inpad,outpad,groups,True,2)
-		self.conv2up = nn.Conv2d(24,16, kernel_size=3, stride=1,padding=1)
-
-		self.deconv1 = nn.ConvTranspose2d(16,16, 2,2,inpad,outpad,groups,True,2)
-		self.conv1up = nn.Conv2d(16,3, kernel_size=3, stride=1,padding=1)
-
-		self.relu = nn.ReLU()
-		self.maxpool = nn.MaxPool2d(2,2,0)
-		self.maxpool = nn.MaxPool2d(2,2,0)
-		self.avpool = nn.AvgPool2d(2,2,0)
-		self.expand5 = nn.Upsample(size=(255,255),mode='bilinear')
-		self.expand3 = nn.Upsample(size=(63,63),mode='bilinear')
-		
-
-
-	def encoder(self,x, maxlevel):
-		
-		debug("e0",x.shape)
-		original_x=x
-		x =self.maxpool(self.relu(self.conv1(x)))
-		
-		debug("e1",x.shape)
-		if maxlevel<=1: return x
-		x =self.maxpool(self.relu(self.conv2(x)))
-		if maxlevel<=2: return x
-
-		debug(2,x.shape)
-		x =self.maxpool(self.relu(self.conv3(x)))
-		debug("latent=",x.shape)
-		if maxlevel<=3: return x
-		x =self.maxpool(self.relu(self.conv4(x)))
-		if maxlevel<=4: return x
-
-		x =self.maxpool(self.relu(self.conv5(x)))
-		# shortcut from early levels..
-		# multilevel feature reuse
-		shortcut_x=self.avpool(self.avpool(self.avpool(original_x)))
-		shortcut_x=self.maxpool(self.relu(self.conv1(shortcut_x)))
-		shortcut_x =self.maxpool(self.relu(self.conv2(shortcut_x)))
-		x = self.combine25(shortcut_x)+x
-
-		return x
-
-	def decoder(self,x, maxlevel):
-		latent= x;
-		if maxlevel>=5:
-			x=self.conv5up(self.relu((self.deconv5(x))))
-		if maxlevel>=4:
-			x=self.conv4up(self.relu(self.deconv4(x)))
-		if maxlevel>=3:
-
-			debug(48,x.shape)
-			x=self.conv3up(self.relu(self.deconv3(x)))
-			debug(49,x.shape)
-			if maxlevel>=5:
-				shortcut_53hi=self.expand3(self.combine53hi(latent))
-				x+=shortcut_53hi
-
-
-		if maxlevel>=2:
-
-			x=self.conv2up(self.relu(self.deconv2(x)))
-		
-		debug(50,x.shape)
-		
-		x=self.conv1up(self.relu(self.deconv1(x)))
-		debug(x.shape)
-
-		#finally if we had all the levels, add the shortcut from latent direct to output
-		if maxlevel>=5:
-				shortcut_53lo=self.expand5(self.conv1up(self.relu((self.deconv1( self.conv2up(self.relu(self.deconv2( 
-								self.combine53lo(latent)))))))))
-				x+=shortcut_53lo
-			
-			#shortcut_x=self.expand5(self.combine50(latent))
-			#x+=shortcut_x
-
-		return x
-	
-	def encode_decode(self, x,maxlevel):
-			return self.decoder(self.encoder(x,maxlevel),maxlevel)
-		
-
-	def forward(self,x):
-		self.iter+=1
-		if self.iter==self.nextshow:
-
-			self.nextshow+=64
-			
-			out=self.encode_decode(x,2)
-			full_out=self.encode_decode(x,10)
-
-			transforms.ToPILImage()((x[0]).float()).show()
-			self.shown=transforms.ToPILImage()((out[0]).float()).show()
-			self.shown=transforms.ToPILImage()((full_out[0]).float()).show()
-
-			return full_out
-
-		else:
-			maxlevel = 2 if random.random()<0.5 else 10
-
-		# randomly only train the first and last few layers, skipping the middle
-		# ths is not classic 'u-net' architecture, just simple encoder-decoder stack
-		#todo logic to graduall advance the shortcut . will need to track 
-		# convergence of the shortcutted part seperately?
-		# or "if error bewlow threshold reduce shortcut probability"?
-			latent=self.encoder(x,maxlevel)
-			out=self.decoder(latent,maxlevel)
-
-		return out
 
 def show_tensors_named(src):
 	#font = ImageFont.truetype("sans-serif.ttf", 16)
@@ -183,7 +31,8 @@ def show_tensors_named(src):
 	for s,name in src:
 		tmp=transforms.ToPILImage()((s).float())
 		img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
-		
+
+
 		draw.text((dx,0),name, (0,255,0))
 		dx+=tmp.width
 
@@ -211,10 +60,10 @@ class AutoencoderV2(nn.Module):
 		else:
 			self.iter+=1
 			out=self.eval_unet(x)
-			if self.iter==self.nextshow:
-				show_tensors_named([(x[0],"input + noise"),(out[0],"unet output["+str(self.levels)+"]")])
 			
-				self.nextshow+=128	
+			#if self.iter==self.nextshow:
+			#	show_tensors_named([(x[0],"input + noise"),(out[0],"unet output["+str(self.levels)+"]")])
+			#	self.nextshow+=128	
 
 			return out
 		
@@ -313,7 +162,7 @@ class AutoencoderV2(nn.Module):
 
 
 def check_ae_works():
-	ae = Autoencoder()
+	ae = AutoencoderV2()
 	input = torch.randn(16,3,256,256)
 	print("check : input=",input.shape,input.dtype)
 	output = ae.forward(input)
@@ -325,8 +174,14 @@ def check_ae_works():
 	output = ae.forward(input)
 	print("input=",input.shape, "\noutput=",output.shape)
 
-def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5):
-	rnd = torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))-0.5
+def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5,rgbness=0.5):
+	#return (torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0)*scale  
+	rgbness=random.random() #override, we will use both grey and rgb noise
+	rnd=torch.rand(shape[0] if rgbness>0.5 else 1, int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0  
+	
+	if rnd.shape[0]==1:
+		rnd = torch.cat([rnd]*shape[0],1 )
+
 	rndAbove = torch.clip(rnd -deadzone,0.0,1.0)
 	rndBelow = torch.clip(rnd +deadzone,-1.0,0.0)
 	if deadzone<1.0:
@@ -335,9 +190,10 @@ def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5):
 	return (rndAbove+rndBelow)*scale
 
 class AddImageNoise(object):
-	def __init__(self,amounts_at_scales,noise_deadzone=0.5):
+	def __init__(self,amounts_at_scales,noise_deadzone=0.5,rgbness=0.5):
 		self.amounts=amounts_at_scales
 		self.noise_deadzone=noise_deadzone
+		self.rgbness=rgbness
 	def __call__(self,sample):
 		# add noise at differnt scales, like fractal clouds
 		# make it work harder to discover real patterns?
@@ -345,7 +201,7 @@ class AddImageNoise(object):
 
 		noise_width=1
 		for amount in self.amounts:
-			rnd = resize(make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone))
+			rnd = resize(make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone,self.rgbness))
 			noise_width*=2
 			sample = torch.add( sample, rnd )
 
@@ -372,7 +228,7 @@ class NoisedImageDataset(Dataset):
 			self.images.append(imgarr)
 		print("total images=",len(self.images))
 
-		self.add_noise=AddImageNoise([0.5,0.5,0.5,0.5],0.25)
+		self.add_noise=AddImageNoise([0.33,0.33,0.25,0.25,0.25],0.25,0.25)
 			
 
 	def __len__(self):
@@ -407,6 +263,7 @@ def  train_epoch(device, model,opt, dataloader):
 
       # Storing the losses in a list for plotting
 
+
 	for i,(data,target) in enumerate(dataloader):
 		
 		data.to(device)
@@ -416,6 +273,12 @@ def  train_epoch(device, model,opt, dataloader):
 		output=model(data)
 		#loss=crit(output,target)
 		loss = loss_function(output, target)
+
+		#todo use timer..
+		if model.iter==model.nextshow:
+			show_tensors_named([(data[0]," input + noise "),(output[0],"unet output"), (target[0],"target")])
+			model.nextshow+=32	
+		
 		opt.zero_grad()
 
 		loss.backward()
@@ -431,22 +294,43 @@ def  train_epoch(device, model,opt, dataloader):
 
 
 	
+def makedir(x): 
+	if x[-1]!='/': x+='/'
+	return x
 	
+def main(argv):
 
-def main():
+	inputdir,outputdir= "../training_images/","trained_models/"
+	learning_rate = 0.1
+	try:
+		opts, args = getopt.getopt(argv,"hi:o:r:",["indir=","outdir=","learningrate="])
+	except getopt.GetoptError:
+		print('test.py -i <inputfile> -o <outputfile> -l learningrate')
+		sys.exit(2)
+	for opt, arg in opts:
+		if opt == '-h':
+			print('test.py -i <inputdir> -o <outputdir>')
+			sys.exit()
+		elif opt in ("-i", "--indir"):
+			inputdir = makedir(arg)
+		elif opt in ("-i", "--indir"):
+			
+			outputdir = makedir(arg)
+		elif opt in ("-l", "--outdir"):
+			learningrate= arg
+
 	print("initializing device..")
+
 
 	no_mps=True
 	if torch.cuda.is_available(): device=torch.device("cuda")
 	elif torch.backends.mps.is_available() and not no_mps: device = torch.device("mps")
 	else: device = torch.device("cpu")
-
 	 
 	print("using device:",device.type)
 
-
 	print("grabbing dataset..")	
-	dataloader=make_dataloader("../../training_images/")
+	dataloader=make_dataloader(inputdir)
 
 	print("building model:")
 	ae = AutoencoderV2()
@@ -454,8 +338,8 @@ def main():
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
-	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=0.1,weight_decay=1e-8),
-		torch.optim.Adadelta(ae.parameters(), lr=0.025,weight_decay=1e-8)]
+	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=learning_rate,weight_decay=1e-8),
+		torch.optim.Adadelta(ae.parameters(), lr=learning_rate*0.25,weight_decay=1e-8)]
 
 
 	save_freq=5
@@ -463,11 +347,11 @@ def main():
 		print("training epoch: ",i)
 		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader)
 		if i%save_freq == 0:
-			torch.save(ae.state_dict(), "trained/my_trained_ae_"+str((i/save_freq)%4))
+			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%4))
 
 	print("training on some images.")
 	torch.save(ae.state_dict(), "my_trained_ae")
 
-main()
+main(sys.argv[1:])
 
 		
