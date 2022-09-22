@@ -8,19 +8,20 @@ import psutil
 
 import random
 import os
-from PIL import Image
+from PIL import Image,ImageDraw,ImageFont
 
 def debug(*a):
 	#print(*a)
 	pass
 
-class Autoencoder(nn.Module):
+class AutoencoderMessyDontUse(nn.Module):
+	# current working one,, but we lost control of these messy shortcut layers and optional dropout combined
 	def __init__(self):
 		self.shown=None
 		self.iter=0
-		self.nextshow=100
+		self.nextshow=5
 		super().__init__()
-		self.conv1 = nn.Conv2d(3,16, kernel_size=5, stride=1,padding=1)
+		self.conv1 = nn.Conv2d(3,16, kernel_size=3, stride=1,padding=1)
 		self.shrink1 = nn.Conv2d(16,16, kernel_size=2, stride=2,padding=0)
 		self.conv2 = nn.Conv2d(16,24, kernel_size=3, stride=1,padding=1)
 		self.shrink2 = nn.Conv2d(24,24, kernel_size=2, stride=2,padding=0)
@@ -34,8 +35,12 @@ class Autoencoder(nn.Module):
 		self.conv5 = nn.Conv2d(48,64, kernel_size=3, stride=1,padding=1)
 		self.shrink5 = nn.Conv2d(64,64, kernel_size=2, stride=2,padding=0)
 
+		# dense reuse of early level
+		self.combine25 = nn.Conv2d(24,64, kernel_size=1, stride=1, padding=0)
+		self.combine50 = nn.Conv2d(64,3, kernel_size=1, stride=1, padding=0)
 		
-
+		self.combine53lo = nn.Conv2d(64,24, kernel_size=1, stride=1, padding=0)
+		self.combine53hi = nn.Conv2d(64,24, kernel_size=1, stride=1, padding=0)
 
 		inpad=0;outpad=0;groups=1
 
@@ -46,74 +51,211 @@ class Autoencoder(nn.Module):
 		self.conv4up = nn.Conv2d(48,32, kernel_size=3, stride=1,padding=1)
 
 		
+
+		
 		self.deconv3 = nn.ConvTranspose2d(32,32, 2,2,inpad,outpad,groups,True,2)
 		self.conv3up = nn.Conv2d(32,24, kernel_size=3, stride=1,padding=1)
 
 		self.deconv2 = nn.ConvTranspose2d(24,24, 2,2,inpad,outpad,groups,True,2)
 		self.conv2up = nn.Conv2d(24,16, kernel_size=3, stride=1,padding=1)
 
-		self.deconv1 = nn.ConvTranspose2d(16,16,	2,2,inpad,outpad,groups,True,2)
+		self.deconv1 = nn.ConvTranspose2d(16,16, 2,2,inpad,outpad,groups,True,2)
 		self.conv1up = nn.Conv2d(16,3, kernel_size=3, stride=1,padding=1)
 
 		self.relu = nn.ReLU()
 		self.maxpool = nn.MaxPool2d(2,2,0)
+		self.maxpool = nn.MaxPool2d(2,2,0)
+		self.avpool = nn.AvgPool2d(2,2,0)
+		self.expand5 = nn.Upsample(size=(255,255),mode='bilinear')
+		self.expand3 = nn.Upsample(size=(63,63),mode='bilinear')
+		
 
 
-	def encoder(self,x, shortcut):
+	def encoder(self,x, maxlevel):
 		
 		debug("e0",x.shape)
+		original_x=x
 		x =self.maxpool(self.relu(self.conv1(x)))
-
+		
 		debug("e1",x.shape)
-
+		if maxlevel<=1: return x
 		x =self.maxpool(self.relu(self.conv2(x)))
-		if shortcut: return x
+		if maxlevel<=2: return x
 
 		debug(2,x.shape)
 		x =self.maxpool(self.relu(self.conv3(x)))
 		debug("latent=",x.shape)
-
+		if maxlevel<=3: return x
 		x =self.maxpool(self.relu(self.conv4(x)))
+		if maxlevel<=4: return x
+
 		x =self.maxpool(self.relu(self.conv5(x)))
+		# shortcut from early levels..
+		# multilevel feature reuse
+		shortcut_x=self.avpool(self.avpool(self.avpool(original_x)))
+		shortcut_x=self.maxpool(self.relu(self.conv1(shortcut_x)))
+		shortcut_x =self.maxpool(self.relu(self.conv2(shortcut_x)))
+		x = self.combine25(shortcut_x)+x
+
 		return x
 
-	def decoder(self,x, shortcut):
-		if not shortcut:
-			x=self.relu(self.conv5up(self.deconv5(x)))
-			x=self.relu(self.conv4up(self.deconv4(x)))
-		
+	def decoder(self,x, maxlevel):
+		latent= x;
+		if maxlevel>=5:
+			x=self.conv5up(self.relu((self.deconv5(x))))
+		if maxlevel>=4:
+			x=self.conv4up(self.relu(self.deconv4(x)))
+		if maxlevel>=3:
+
 			debug(48,x.shape)
-			x=self.relu(self.conv3up(self.deconv3(x)))
-		
+			x=self.conv3up(self.relu(self.deconv3(x)))
 			debug(49,x.shape)
-		
-		x=self.relu(self.conv2up(self.deconv2(x)))
+			if maxlevel>=5:
+				shortcut_53hi=self.expand3(self.combine53hi(latent))
+				x+=shortcut_53hi
+
+
+		if maxlevel>=2:
+
+			x=self.conv2up(self.relu(self.deconv2(x)))
 		
 		debug(50,x.shape)
 		
-		x=self.relu(self.conv1up(self.deconv1(x)))
+		x=self.conv1up(self.relu(self.deconv1(x)))
 		debug(x.shape)
+
+		#finally if we had all the levels, add the shortcut from latent direct to output
+		if maxlevel>=5:
+				shortcut_53lo=self.expand5(self.conv1up(self.relu((self.deconv1( self.conv2up(self.relu(self.deconv2( 
+								self.combine53lo(latent)))))))))
+				x+=shortcut_53lo
+			
+			#shortcut_x=self.expand5(self.combine50(latent))
+			#x+=shortcut_x
+
 		return x
+	
+	def encode_decode(self, x,maxlevel):
+			return self.decoder(self.encoder(x,maxlevel),maxlevel)
 		
 
 	def forward(self,x):
+		self.iter+=1
+		if self.iter==self.nextshow:
+
+			self.nextshow+=64
+			
+			out=self.encode_decode(x,2)
+			full_out=self.encode_decode(x,10)
+
+			transforms.ToPILImage()((x[0]).float()).show()
+			self.shown=transforms.ToPILImage()((out[0]).float()).show()
+			self.shown=transforms.ToPILImage()((full_out[0]).float()).show()
+
+			return full_out
+
+		else:
+			maxlevel = 2 if random.random()<0.5 else 10
+
 		# randomly only train the first and last few layers, skipping the middle
 		# ths is not classic 'u-net' architecture, just simple encoder-decoder stack
-		shortcut =  True #random.random()<0.5
-		latent=self.encoder(x,shortcut)
-		out=self.decoder(latent,shortcut)
+		#todo logic to graduall advance the shortcut . will need to track 
+		# convergence of the shortcutted part seperately?
+		# or "if error bewlow threshold reduce shortcut probability"?
+			latent=self.encoder(x,maxlevel)
+			out=self.decoder(latent,maxlevel)
+
+		return out
+
+def show_tensors_named(src):
+	#font = ImageFont.truetype("sans-serif.ttf", 16)
+
+	total_width=0
+	max_height=0
+	for s,name in src:
+		total_width+=s.shape[2]
+		max_height=max(s.shape[1],max_height)
+
+	img=Image.new('RGB',(total_width,max_height))
+	dx=0
+
+	draw=ImageDraw.Draw(img)
+	for s,name in src:
+		tmp=transforms.ToPILImage()((s).float())
+		img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
 		
+		draw.text((dx,0),name, (0,255,0))
+		dx+=tmp.width
+
+	img.show()
+
+
+class AutoencoderV2(nn.Module):
+
+	def forward(self,x):
 		self.iter+=1
 		if self.iter==self.nextshow:
 			
-			self.shown=transforms.ToPILImage()((x[0]).float()).show()
-			self.shown=transforms.ToPILImage()((out[0]).float()).show()
+			self.nextshow+=128	
+			show_tensors_named([(x[0],"input+noise") if i==0 else (self.encode_decode(x,i)[0],"level"+str(i)) for i in range(0,self.levels+1)])
 
-			self.iter=0
-			self.nextshow*=10
-
+		maxlevel =self.levels//2 if random.random()<0.5 else self.levels
+		out = self.encode_decode(x,maxlevel)
 		return out
+
+	def __init__(self,channels=[3,16,32,64],kernelSize=5):
+		self.shown=None
+		self.iter=0
+		self.nextshow=5
+		super().__init__()
+		imagec=3
+		dim=32
+		levels=len(channels)-1
+		self.levels=levels
 		
+		#pytorch needs 'ModuleList' to find layers in arrays
+		self.conv = nn.ModuleList([nn.Conv2d(channels[i],channels[i+1], kernel_size=kernelSize, stride=1,padding='same')
+				for i in range(0,levels)])
+		
+		self.downsample = nn.ModuleList(
+			[nn.Conv2d(channels[i+1],channels[i+1], kernel_size=3, stride=2, padding=0)
+				for i in range(0,levels)])
+
+		self.upsample = nn.ModuleList(
+			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2,padding=0,dilation=2)
+				for i in range(0,self.levels)])
+
+		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same')
+				for i in range(0,self.levels)])
+
+		print(self.conv, self.convup)
+		self.maxpool = nn.MaxPool2d(2,2,0)
+		self.avpool = nn.AvgPool2d(2,2,0)
+		self.activ = nn.ReLU()
+
+	def encoder(self,x,maxlevel):
+		debug("input shape=",x.shape)
+		for i in range(0,maxlevel):
+			x=self.activ(self.conv[i](x))
+			if i!=maxlevel-1:
+				x=self.downsample[i](x)
+			debug("encoder[%d]shape output=" % (i),x.shape)
+		return x
+
+	def decoder(self,x,maxlevel):
+		debug("latent shape=",x.shape)
+		for i in reversed(range(0,maxlevel)):
+			if i!=maxlevel-1:
+				x=self.upsample[i](x)
+			x=self.activ(self.convup[i](x))
+			debug("decoder[%d]shape output=",x.shape)
+		return x
+
+	def encode_decode(self,x,maxlevel):
+		latent  = self.encoder(x,maxlevel)
+		return self.decoder(latent,maxlevel)
+ 
+
 
 def check_ae_works():
 	ae = Autoencoder()
@@ -129,13 +271,17 @@ def check_ae_works():
 	print("input=",input.shape, "\noutput=",output.shape)
 
 class AddImageNoise(object):
-	def __init__(self,amountfine,amountcoarse):
-		self.amount=[amountfine,amountcoarse]
+	def __init__(self,amounts):
+		self.amount=amounts
 	def __call__(self,sample):
-		rndlittle=((torch.rand( sample.shape)-0.5)*self.amount[0])
+		# add noise at differnt scales, like fractal clouds
+		# make it work harder to discover real patterns?
 		resize=transforms.Resize((sample.shape[1],sample.shape[2]))
-		rndbig=resize((torch.rand( sample.shape[0],int(sample.shape[1]/2),int(sample.shape[2]/2)) -0.5)*self.amount[1])
-		rnd=rndlittle +rndbig
+		rnd1=((torch.rand( sample.shape)-0.5)*self.amount[0])
+		rnd2=resize((torch.rand( sample.shape[0],int(sample.shape[1]/2),int(sample.shape[2]/2)) -0.5)*self.amount[1])
+		rnd4=resize((torch.rand( sample.shape[0],int(sample.shape[1]/4),int(sample.shape[2]/4)) -0.5)*self.amount[2])
+		rnd8=resize((torch.rand( sample.shape[0],int(sample.shape[1]/8),int(sample.shape[2]/8)) -0.5)*self.amount[2])
+		rnd=rnd1 +rnd2+rnd4 + rnd8
 
 		sample=torch.add(sample,rnd)
 		
@@ -160,7 +306,7 @@ class NoisedImageDataset(Dataset):
 			self.images.append(imgarr)
 		print("total images=",len(self.images))
 
-		self.add_noise=AddImageNoise(0.5,0.0)
+		self.add_noise=AddImageNoise([0.5,0.5,0.5,0.5])
 			
 
 	def __len__(self):
@@ -186,10 +332,10 @@ def make_dataloader(dirname="../training_images/",show=False):
 		shuffle=True)
 		
 def  train_epoch(device, model,opt, dataloader):
-	running_loss=0
-	last_loss=0
-	interval=10
-
+	running_loss=0; num=0
+	
+	print_interval=min(10,len(dataloader))
+	
        
 	loss_function = torch.nn.MSELoss()
 
@@ -209,10 +355,10 @@ def  train_epoch(device, model,opt, dataloader):
 		loss.backward()
 		opt.step()
 
-		running_loss+=loss.item()
-		if i % interval == 0:
-			print("i=",i, "\tloss=",running_loss/float(interval))
-			running_loss=0
+		running_loss+=loss.item(); num+=1
+		if (i+1) % print_interval == 0:
+			print("i=",i, "\tloss=",running_loss/float(num))
+			running_loss=0; num=0
  
 		
 
@@ -232,14 +378,17 @@ def main():
 	 
 	print("using device:",device.type)
 
-	print("grabbing dataset..")
-	ae = Autoencoder()
-	ae.to(device)
-	
+
+	print("grabbing dataset..")	
 	dataloader=make_dataloader("../../training_images/")
+
+	print("building model:")
+	ae = AutoencoderV2()
+	ae.to(device)
+
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
-	optimizer = torch.optim.Adadelta(ae.parameters(), lr=0.1,weight_decay=1e-8)
+	optimizer = torch.optim.Adadelta(ae.parameters(), lr=0.05,weight_decay=1e-8)
 
 	save_freq=5
 	for i in range(0,10000):
