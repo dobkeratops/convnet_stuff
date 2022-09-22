@@ -1,1 +1,6 @@
-testbed for writing convnet inference in opencl
+Testbed for writing convnet inference in opencl
+
+plus PyTorch program to experiment with training autoencoders and more
+
+goal is to use neural nets to augment retro game/indie game art, with a small/custom lib for integration
+

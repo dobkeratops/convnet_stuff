@@ -39,7 +39,7 @@ def show_tensors_named(src):
 	img.show()
 
 
-class AutoencoderV2(nn.Module):
+class AutoEncoder(nn.Module):
 
 	def eval_all(self,x):
 		if False:
@@ -106,7 +106,7 @@ class AutoencoderV2(nn.Module):
 
 		#self.encoder_shortcut=nn.Conv2d(channels[0],channels[levels],kernel_size,padding='same')
 
-		print(self.conv, self.convup)
+		print(self.conv, self.downsample, self.convup,self.upsample)
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.avpool = nn.AvgPool2d(2,2,0)
 		self.activ = nn.ReLU()
@@ -162,7 +162,7 @@ class AutoencoderV2(nn.Module):
 
 
 def check_ae_works():
-	ae = AutoencoderV2()
+	ae = Autoencoder()
 	input = torch.randn(16,3,256,256)
 	print("check : input=",input.shape,input.dtype)
 	output = ae.forward(input)
@@ -216,15 +216,16 @@ class NoisedImageDataset(Dataset):
 	def __init__(self,dirname): 
 		print("init dataset from dir: ",dirname)
 		self.images=[]
-		
+		ishow=1
 		for i,x in enumerate(os.listdir(dirname)):
 			img=Image.open(dirname+x)
 			img=img.resize((255,255))
 			imgarr=numpy.array(img)
 			#imgarr=imgarr[0:255,0:255,0:3]
 			imgarr=torch.tensor(imgarr.transpose((2,0,1))).float()*(1.0/255.0) # numpy HWC -> torch CHW
-			if i<32:
+			if i>=ishow:
 				print("img[",i,"] ",x," size=",imgarr.shape)
+				ishow*=2
 			self.images.append(imgarr)
 		print("total images=",len(self.images))
 
@@ -300,7 +301,7 @@ def makedir(x):
 	
 def main(argv):
 
-	inputdir,outputdir= "../training_images/","trained_models/"
+	inputdir,outputdir= "training_images/","trained_models/"
 	learning_rate = 0.1
 	try:
 		opts, args = getopt.getopt(argv,"hi:o:r:",["indir=","outdir=","learningrate="])
@@ -329,11 +330,11 @@ def main(argv):
 	 
 	print("using device:",device.type)
 
-	print("grabbing dataset..")	
+	print("grabbing dataset.."+inputdir)	
 	dataloader=make_dataloader(inputdir)
 
 	print("building model:")
-	ae = AutoencoderV2()
+	ae = AutoEncoder()
 	ae.to(device)
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
@@ -341,6 +342,7 @@ def main(argv):
 	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=learning_rate,weight_decay=1e-8),
 		torch.optim.Adadelta(ae.parameters(), lr=learning_rate*0.25,weight_decay=1e-8)]
 
+	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
 	save_freq=5
 	for i in range(0,10000):
