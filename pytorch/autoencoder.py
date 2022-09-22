@@ -192,16 +192,36 @@ def show_tensors_named(src):
 
 class AutoencoderV2(nn.Module):
 
-	def forward(self,x):
-		self.iter+=1
-		if self.iter==self.nextshow:
-			
-			self.nextshow+=128	
-			show_tensors_named([(x[0],"input+noise") if i==0 else (self.encode_decode(x,i)[0],"level"+str(i)) for i in range(0,self.levels+1)])
+	def eval_all(self,x):
+		if False:
+			self.iter+=1
+			if self.iter==self.nextshow:
+				self.nextshow+=128	
+				
+				show_tensors_named(
+					[(x[0],"input+noise") if i==0 else (self.encode_decode(x,0,i)[0],"level"+str(i)) for i in range(0,self.levels+1)]
+					
+					)
 
-		maxlevel =self.levels//2 if random.random()<0.5 else self.levels
-		out = self.encode_decode(x,maxlevel)
-		return out
+			r = random.random()
+			maxlevel =self.levels//2 if r<0.25 else self.levels-1 if (r<0.5 and self.levels>1) else self.levels
+			out = self.encode_decode(x,0,maxlevel)
+			return out
+
+		else:
+			self.iter+=1
+			out=self.eval_unet(x)
+			if self.iter==self.nextshow:
+				show_tensors_named([(x[0],"input + noise"),(out[0],"unet output["+str(self.levels)+"]")])
+			
+				self.nextshow+=128	
+
+			return out
+		
+
+	
+	def forward(self,x):
+		return self.eval_all(x)
 
 	def __init__(self,channels=[3,16,32,64],kernelSize=5):
 		self.shown=None
@@ -214,8 +234,15 @@ class AutoencoderV2(nn.Module):
 		self.levels=levels
 		
 		#pytorch needs 'ModuleList' to find layers in arrays
+		#self.downskip=nn.ModuleList([])
 		self.conv = nn.ModuleList([nn.Conv2d(channels[i],channels[i+1], kernel_size=kernelSize, stride=1,padding='same')
 				for i in range(0,levels)])
+
+		# downskip is an attempt to provide skip connetions to &  from the latent space
+		##for i in range(0,levels/2):
+			
+			
+		
 		
 		self.downsample = nn.ModuleList(
 			[nn.Conv2d(channels[i+1],channels[i+1], kernel_size=3, stride=2, padding=0)
@@ -228,32 +255,60 @@ class AutoencoderV2(nn.Module):
 		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same')
 				for i in range(0,self.levels)])
 
+		#self.encoder_shortcut=nn.Conv2d(channels[0],channels[levels],kernel_size,padding='same')
+
 		print(self.conv, self.convup)
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.avpool = nn.AvgPool2d(2,2,0)
 		self.activ = nn.ReLU()
 
-	def encoder(self,x,maxlevel):
+	def encoder(self,x,inlevel,outlevel):
 		debug("input shape=",x.shape)
-		for i in range(0,maxlevel):
+		for i in range(inlevel,outlevel):
 			x=self.activ(self.conv[i](x))
-			if i!=maxlevel-1:
+			if i!=outlevel-1:
 				x=self.downsample[i](x)
 			debug("encoder[%d]shape output=" % (i),x.shape)
+		#x=nn.tensor.Add(x, self.activ(self.encoder_shortcut()))
 		return x
 
-	def decoder(self,x,maxlevel):
+	def decoder(self,x,inlevel,outlevel):
 		debug("latent shape=",x.shape)
-		for i in reversed(range(0,maxlevel)):
-			if i!=maxlevel-1:
+		for i in reversed(range(inlevel,outlevel)):
+			if i!=outlevel-1:
 				x=self.upsample[i](x)
 			x=self.activ(self.convup[i](x))
 			debug("decoder[%d]shape output=",x.shape)
 		return x
 
-	def encode_decode(self,x,maxlevel):
-		latent  = self.encoder(x,maxlevel)
-		return self.decoder(latent,maxlevel)
+	def encode_decode(self,x,inlevel,outlevel):
+		latent  = self.encoder(x,inlevel,outlevel)
+		return self.decoder(latent,inlevel,outlevel)
+	
+	def eval_unet(self, input):
+		debug("eval unet ",input.shape)
+		level_val=[]
+		x=input
+		for i in range(0,self.levels):
+			debug("encode ",i)
+			x=self.activ( self.conv[i](x))
+			if i!=self.levels-1:
+					x=self.downsample[i](x)
+			debug("eval ubet", x.shape)
+			level_val.append( x )
+			
+
+		x=level_val[self.levels-1]
+		debug("latent", x.shape)
+		for i in reversed(range(0,self.levels)):
+			debug("decdode ",i)
+			if i!=self.levels-1:
+				x=torch.add(x,level_val[i])
+				x=self.upsample[i](x)
+			x=self.activ(self.convup[i](x))
+
+		return x
+			
  
 
 
@@ -270,20 +325,31 @@ def check_ae_works():
 	output = ae.forward(input)
 	print("input=",input.shape, "\noutput=",output.shape)
 
+def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5):
+	rnd = torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))-0.5
+	rndAbove = torch.clip(rnd -deadzone,0.0,1.0)
+	rndBelow = torch.clip(rnd +deadzone,-1.0,0.0)
+	if deadzone<1.0:
+		scale*=1.0/(1.0-deadzone)
+	
+	return (rndAbove+rndBelow)*scale
+
 class AddImageNoise(object):
-	def __init__(self,amounts):
-		self.amount=amounts
+	def __init__(self,amounts_at_scales,noise_deadzone=0.5):
+		self.amounts=amounts_at_scales
+		self.noise_deadzone=noise_deadzone
 	def __call__(self,sample):
 		# add noise at differnt scales, like fractal clouds
 		# make it work harder to discover real patterns?
 		resize=transforms.Resize((sample.shape[1],sample.shape[2]))
-		rnd1=((torch.rand( sample.shape)-0.5)*self.amount[0])
-		rnd2=resize((torch.rand( sample.shape[0],int(sample.shape[1]/2),int(sample.shape[2]/2)) -0.5)*self.amount[1])
-		rnd4=resize((torch.rand( sample.shape[0],int(sample.shape[1]/4),int(sample.shape[2]/4)) -0.5)*self.amount[2])
-		rnd8=resize((torch.rand( sample.shape[0],int(sample.shape[1]/8),int(sample.shape[2]/8)) -0.5)*self.amount[2])
-		rnd=rnd1 +rnd2+rnd4 + rnd8
 
-		sample=torch.add(sample,rnd)
+		noise_width=1
+		for amount in self.amounts:
+			rnd = resize(make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone))
+			noise_width*=2
+			sample = torch.add( sample, rnd )
+
+		#sample=torch.add(sample,rnd)
 		
 		sample=torch.clip(sample,0,1.0)
 		
@@ -306,7 +372,7 @@ class NoisedImageDataset(Dataset):
 			self.images.append(imgarr)
 		print("total images=",len(self.images))
 
-		self.add_noise=AddImageNoise([0.5,0.5,0.5,0.5])
+		self.add_noise=AddImageNoise([0.5,0.5,0.5,0.5],0.25)
 			
 
 	def __len__(self):
@@ -388,12 +454,14 @@ def main():
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
-	optimizer = torch.optim.Adadelta(ae.parameters(), lr=0.05,weight_decay=1e-8)
+	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=0.1,weight_decay=1e-8),
+		torch.optim.Adadelta(ae.parameters(), lr=0.025,weight_decay=1e-8)]
+
 
 	save_freq=5
 	for i in range(0,10000):
 		print("training epoch: ",i)
-		train_epoch(device, ae,optimizer,  dataloader)
+		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader)
 		if i%save_freq == 0:
 			torch.save(ae.state_dict(), "trained/my_trained_ae_"+str((i/save_freq)%4))
 
