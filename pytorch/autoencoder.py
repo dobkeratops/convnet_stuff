@@ -6,37 +6,72 @@ from torchvision import transforms, utils
 import torch.nn.functional as F
 import psutil
 import sys,getopt
+import time
 
 import random
 import os
 from PIL import Image,ImageDraw,ImageFont
+import socket
+
+# so we can view progress on web 
+# launch on console, console can print handy link to view status.
+def get_ip():
+	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	s.settimeout(0)
+	try:
+		# doesn't even have to be reachable
+		s.connect(('10.254.254.254', 1))
+		IP = s.getsockname()[0]
+	except Exception:
+		IP = '127.0.0.1'
+	finally:
+		s.close()
+	return IP
 
 def debug(*a):
 	#print(*a)
 	pass
 
-def show_tensors_named(src):
-	#font = ImageFont.truetype("sans-serif.ttf", 16)
+def show_tensors_named(images_and_names):
+	img = concat_named_images(images_and_names)
+	img.show()
 
+def concat_named_images(images_and_names):
 	total_width=0
 	max_height=0
-	for s,name in src:
+	for s,name in images_and_names:
 		total_width+=s.shape[2]
 		max_height=max(s.shape[1],max_height)
 
-	img=Image.new('RGB',(total_width,max_height))
+	dst_img=Image.new('RGB',(total_width,max_height))
 	dx=0
 
-	draw=ImageDraw.Draw(img)
-	for s,name in src:
-		tmp=transforms.ToPILImage()((s).float())
-		img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
-
+	draw=ImageDraw.Draw(dst_img)
+	for src_img,name in images_and_names:
+		tmp=transforms.ToPILImage()((src_img).float())
+		dst_img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
+		
 
 		draw.text((dx,0),name, (0,255,0))
 		dx+=tmp.width
+	return dst_img
 
-	img.show()
+def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
+	
+	draw=ImageDraw.Draw(img)
+	padding_y=16
+	textbox= draw.getfont().getmask(title).getbbox()
+	textsize=(textbox[2],textbox[3])
+
+	
+	width = max(img.width,textsize[0])
+	dst=Image.new('RGB',(width,img.height+textsize[1]+padding_y), bgcol)
+	draw=ImageDraw.Draw(dst)
+	draw.text(((width-textsize[0])//2,padding_y/2),title, fgcol)
+	dst.paste(img, ((width-img.width)//2, textsize[1]+padding_y) )
+	return dst
+	
+
 
 
 class AutoEncoder(nn.Module):
@@ -253,9 +288,25 @@ def make_dataloader(dirname="../training_images/",show=False):
 		dataset,
 		batch_size=4, 
 		shuffle=True)
-		
-def  train_epoch(device, model,opt, dataloader):
+
+def visualize_progress(time, loss, input_data, output, target):
+	
+
+	# if no display , store it in the local webserver ?
+	img=add_title_to_image(
+		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss),
+		concat_named_images([(input_data," input + noise "),(output,"unet output"), (target,"target")]))
+	if os.path.isdir("/var/www/html"):
+		print("\tsee progress at http://",get_ip(),"/progress.jpg");
+		img.save("/var/www/html/progress.jpg")
+
+	img.show()
+
+
+
+def  train_epoch(device, model,opt, dataloader,t_start):
 	running_loss=0; num=0
+	
 	
 	print_interval=min(10,len(dataloader))
 	
@@ -264,6 +315,7 @@ def  train_epoch(device, model,opt, dataloader):
 
       # Storing the losses in a list for plotting
 
+	
 
 	for i,(data,target) in enumerate(dataloader):
 		
@@ -275,9 +327,10 @@ def  train_epoch(device, model,opt, dataloader):
 		#loss=crit(output,target)
 		loss = loss_function(output, target)
 
+		t_elapsed=time.time()-t_start
 		#todo use timer..
 		if model.iter==model.nextshow:
-			show_tensors_named([(data[0]," input + noise "),(output[0],"unet output"), (target[0],"target")])
+			visualize_progress(t_elapsed,loss.item(),data[0],output[0],target[0])
 			model.nextshow+=32	
 		
 		opt.zero_grad()
@@ -287,7 +340,7 @@ def  train_epoch(device, model,opt, dataloader):
 
 		running_loss+=loss.item(); num+=1
 		if (i+1) % print_interval == 0:
-			print("i=",i, "\tloss=",running_loss/float(num))
+			print("i=",i,"\tt=",t_elapsed,"\tloss=",running_loss/float(num))
 			running_loss=0; num=0
  
 		
@@ -345,9 +398,10 @@ def main(argv):
 	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
 	save_freq=5
+	t_start=time.time()
 	for i in range(0,10000):
 		print("training epoch: ",i)
-		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader)
+		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader,t_start)
 		if i%save_freq == 0:
 			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%4))
 
