@@ -7,13 +7,15 @@ import torch.nn.functional as F
 import psutil
 import sys,getopt
 import time
+import matplotlib
+from matplotlib import pyplot as plt
 
 import random
 import os
 from PIL import Image,ImageDraw,ImageFont
 import socket
 
-# so we can view progress on web 
+# so we can view progress on web plt.plot()
 # launch on console, console can print handy link to view status.
 def get_ip():
 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -38,9 +40,12 @@ def show_tensors_named(images_and_names):
 
 def concat_named_images(images_and_names):
 	total_width=0
-	max_height=0
+	max_height=0 
+	
+	
 	for s,name in images_and_names:
 		total_width+=s.shape[2]
+		
 		max_height=max(s.shape[1],max_height)
 
 	dst_img=Image.new('RGB',(total_width,max_height))
@@ -289,26 +294,73 @@ def make_dataloader(dirname="../training_images/",show=False):
 		batch_size=4, 
 		shuffle=True)
 
-def visualize_progress(time, loss, input_data, output, target):
-	
+def paste_vertical(src_imgs):
+	maxw=0
+	totaly=0
+	for si in src_imgs:
+		maxw=max(maxw,si.width)
+		totaly+=si.height
 
+	img=Image.new('RGB',(maxw,totaly),(128,128,128))
+	dy=0
+	for si in src_imgs:
+		img.paste(si,((maxw-si.width)//2,dy))
+		dy+=si.height
+		
+	return img
+
+def visualize_progress(progress,time, loss, input_data, output, target):
+	
+	graph=progress.draw_graph()
 	# if no display , store it in the local webserver ?
 	img=add_title_to_image(
-		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss),
-		concat_named_images([(input_data," input + noise "),(output,"unet output"), (target,"target")]))
+		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss),		
+			concat_named_images([(input_data," input + noise "),(output,"unet output"), (target,"target")]),
+		)
+	img=paste_vertical([img,graph])
 	if os.path.isdir("/var/www/html"):
 		print("\tsee progress at http://",get_ip(),"/progress.jpg");
 		img.save("/var/www/html/progress.jpg")
 
 	img.show()
 
+class Progress:
+	def __init__(self):
+		self.t_start = time.time()
+		self.loss_graph=[]
+
+	def time_elapsed(self):
+		return time.time()-self.t_start
+	
+	def add_point(self,y):
+		self.loss_graph.append((y,self.time_elapsed()))
+
+	def draw_graph(self,size=(1024,256)):
+		
+		# plot with various axes scales
+		plt.figure()
+
+		# linear
+		plt.subplot(221)
+		
+		plt.yscale('log')
+		plt.ylabel('loss')
+		plt.xlabel('time/s')
+		plt.title('training progress')
+		xs=[p[1] for p in self.loss_graph]
+		ys=[p[0] for p in self.loss_graph]
+		plt.plot(xs,ys)
+		plt.grid(True)
+		plt.savefig("loss_graph.jpg")
+		return Image.open("loss_graph.jpg")
 
 
-def  train_epoch(device, model,opt, dataloader,t_start):
+
+def  train_epoch(device, model,opt, dataloader,progress):
 	running_loss=0; num=0
 	
 	
-	print_interval=min(10,len(dataloader))
+	print_interval=min(10,len(dataloader)/2)
 	
        
 	loss_function = torch.nn.MSELoss()
@@ -327,10 +379,11 @@ def  train_epoch(device, model,opt, dataloader,t_start):
 		#loss=crit(output,target)
 		loss = loss_function(output, target)
 
-		t_elapsed=time.time()-t_start
+		t_elapsed=progress.time_elapsed()
+		
 		#todo use timer..
 		if model.iter==model.nextshow:
-			visualize_progress(t_elapsed,loss.item(),data[0],output[0],target[0])
+			visualize_progress(progress,t_elapsed,loss.item(),data[0],output[0],target[0])
 			model.nextshow+=32	
 		
 		opt.zero_grad()
@@ -340,12 +393,10 @@ def  train_epoch(device, model,opt, dataloader,t_start):
 
 		running_loss+=loss.item(); num+=1
 		if (i+1) % print_interval == 0:
-			print("i=",i,"\tt=",t_elapsed,"\tloss=",running_loss/float(num))
+			interval_av_loss= running_loss/float(num)
+			progress.add_point(interval_av_loss)
+			print("i=",i,"\tt=",t_elapsed,"\tloss=",interval_av_loss)
 			running_loss=0; num=0
- 
-		
-
-
 
 	
 def makedir(x): 
@@ -398,10 +449,10 @@ def main(argv):
 	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
 	save_freq=5
-	t_start=time.time()
+	progress=Progress()
 	for i in range(0,10000):
 		print("training epoch: ",i)
-		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader,t_start)
+		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader,progress)
 		if i%save_freq == 0:
 			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%4))
 
