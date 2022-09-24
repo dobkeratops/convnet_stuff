@@ -112,15 +112,31 @@ class AutoEncoder(nn.Module):
 	def forward(self,x):
 		return self.eval_all(x)
 
-	def __init__(self,channels=[3,16,32,64],kernelSize=5):
+	def config_string(self):
+		return "unet"+\
+			" channels="+str(self.channels)+\
+			" uselevels="+str(self.uselevel)+"/"+str(self.levels)+\
+			" kernel="+str(self.kernelsize)+\
+			" skip_connecitons="+str(self.skip_connections)+\
+			" skip_dropout="+str(self.skip_dropout)
+
+	def __init__(self,channels=[3,16,32,64,128],kernelSize= 5,skip_connections=False, skip_dropout=True):
 		self.shown=None
 		self.iter=0
 		self.nextshow=5
+		self.skip_dropout=skip_dropout
+		self.channels=channels
+		self.dropout=0.25
+		
+		self.kernelsize=kernelSize
+		self.skip_connections=skip_connections
+		
 		super().__init__()
 		imagec=3
 		dim=32
 		levels=len(channels)-1
 		self.levels=levels
+		self.uselevel=min(1,self.levels)
 		
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
@@ -141,31 +157,43 @@ class AutoEncoder(nn.Module):
 			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2,padding=0,dilation=2)
 				for i in range(0,self.levels)])
 
+		maxchannels=channels[levels-1]
+		
 		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same')
 				for i in range(0,self.levels)])
-
-		#self.encoder_shortcut=nn.Conv2d(channels[0],channels[levels],kernel_size,padding='same')
-
+		
 		print(self.conv, self.downsample, self.convup,self.upsample)
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.avpool = nn.AvgPool2d(2,2,0)
+		self.avpool3 = nn.AvgPool2d(3,2,0)
 		self.activ = nn.ReLU()
 
 	def encoder(self,x,inlevel,outlevel):
+		x0=x
 		debug("input shape=",x.shape)
 		for i in range(inlevel,outlevel):
+			if i>0: x=nn.Dropout(0.25)(x) #never dropout the actual input image channels!
 			x=self.activ(self.conv[i](x))
 			if i!=outlevel-1:
 				x=self.downsample[i](x)
 			debug("encoder[%d]shape output=" % (i),x.shape)
-		#x=nn.tensor.Add(x, self.activ(self.encoder_shortcut()))
+
+			
 		return x
 
 	def decoder(self,x,inlevel,outlevel):
 		debug("latent shape=",x.shape)
 		for i in reversed(range(inlevel,outlevel)):
+			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			if i!=outlevel-1:
+				if self.skip_connections:
+					
+					if not (self.skip_dropout and random.random()<0.5):
+						x=torch.add(x,level_val[i])
+						x*=0.5
+				
 				x=self.upsample[i](x)
+
 			x=self.activ(self.convup[i](x))
 			debug("decoder[%d]shape output=",x.shape)
 		return x
@@ -173,27 +201,34 @@ class AutoEncoder(nn.Module):
 	def encode_decode(self,x,inlevel,outlevel):
 		latent  = self.encoder(x,inlevel,outlevel)
 		return self.decoder(latent,inlevel,outlevel)
+
+	def increase_depth(self):
+		self.uselevel=min(self.uselevel+1,self.levels)
 	
 	def eval_unet(self, input):
 		debug("eval unet ",input.shape)
 		level_val=[]
 		x=input
-		for i in range(0,self.levels):
+		
+		
+		for i in range(0,self.uselevel):
 			debug("encode ",i)
 			x=self.activ( self.conv[i](x))
-			if i!=self.levels-1:
+			if i!=self.uselevel-1:
 					x=self.downsample[i](x)
 			debug("eval ubet", x.shape)
 			level_val.append( x )
 			
 
-		x=level_val[self.levels-1]
+		x=level_val[self.uselevel-1]
 		debug("latent", x.shape)
-		for i in reversed(range(0,self.levels)):
+		for i in reversed(range(0,self.uselevel)):
 			debug("decdode ",i)
-			if i!=self.levels-1:
-				x=torch.add(x,level_val[i])
+			if i!=self.uselevel-1:
+				if self.skip_connections:
+					x=torch.add(x,level_val[i])
 				x=self.upsample[i](x)
+			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			x=self.activ(self.convup[i](x))
 
 		return x
@@ -217,10 +252,10 @@ def check_ae_works():
 def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5,rgbness=0.5):
 	#return (torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0)*scale  
 	rgbness=random.random() #override, we will use both grey and rgb noise
-	rnd=torch.rand(shape[0] if rgbness>0.5 else 1, int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0  
-	
-	if rnd.shape[0]==1:
-		rnd = torch.cat([rnd]*shape[0],1 )
+	rgbn=False
+	rnd=(torch.rand(1, int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0)*(1-rgbness)
+	rnd = torch.cat([rnd]*shape[0],0 )
+	rnd+=(torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0)*rgbness
 
 	rndAbove = torch.clip(rnd -deadzone,0.0,1.0)
 	rndBelow = torch.clip(rnd +deadzone,-1.0,0.0)
@@ -309,13 +344,13 @@ def paste_vertical(src_imgs):
 		
 	return img
 
-def visualize_progress(progress,time, loss, input_data, output, target):
+def visualize_progress(net,progress,time, loss, input_data, output, target):
 	
 	graph=progress.draw_graph()
 	# if no display , store it in the local webserver ?
 	img=add_title_to_image(
-		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss),		
-			concat_named_images([(input_data," input + noise "),(output,"unet output"), (target,"target")]),
+		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss)+" "+net.config_string(),
+			concat_named_images([(input_data," input + noise "),(output,"network output"), (target,"target")]),
 		)
 	img=paste_vertical([img,graph])
 	if os.path.isdir("/var/www/html"):
@@ -352,6 +387,7 @@ class Progress:
 		plt.plot(xs,ys)
 		plt.grid(True)
 		plt.savefig("loss_graph.jpg")
+		plt.close()
 		return Image.open("loss_graph.jpg")
 
 
@@ -383,8 +419,8 @@ def  train_epoch(device, model,opt, dataloader,progress):
 		
 		#todo use timer..
 		if model.iter==model.nextshow:
-			visualize_progress(progress,t_elapsed,loss.item(),data[0],output[0],target[0])
-			model.nextshow+=32	
+			visualize_progress(model,progress,t_elapsed,loss.item(),data[0],output[0],target[0])
+			model.nextshow+=128	
 		
 		opt.zero_grad()
 
@@ -392,11 +428,16 @@ def  train_epoch(device, model,opt, dataloader,progress):
 		opt.step()
 
 		running_loss+=loss.item(); num+=1
+
 		if (i+1) % print_interval == 0:
 			interval_av_loss= running_loss/float(num)
 			progress.add_point(interval_av_loss)
 			print("i=",i,"\tt=",t_elapsed,"\tloss=",interval_av_loss)
+			if interval_av_loss<0.01:
+				model.increase_depth()
+				
 			running_loss=0; num=0
+			
 
 	
 def makedir(x): 
@@ -434,12 +475,16 @@ def main(argv):
 	 
 	print("using device:",device.type)
 
+	print("building model:")
+	ae = AutoEncoder(channels=[3,32,64,128],kernelSize= 5,skip_connections=True,skip_dropout=False)
+	ae.uselevel=2
+	print("model config:",ae.config_string())
+	ae.to(device)
+
+
 	print("grabbing dataset.."+inputdir)	
 	dataloader=make_dataloader(inputdir)
 
-	print("building model:")
-	ae = AutoEncoder()
-	ae.to(device)
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
@@ -453,6 +498,7 @@ def main(argv):
 	for i in range(0,10000):
 		print("training epoch: ",i)
 		train_epoch(device, ae,optimizer[0 if i<200 else 1],  dataloader,progress)
+		if (i+1) % 100==0: ae.increase_depth()
 		if i%save_freq == 0:
 			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%4))
 
