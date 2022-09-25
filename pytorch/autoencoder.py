@@ -7,6 +7,8 @@ import psutil
 import sys,getopt
 import time
 import matplotlib
+import torchvision
+from torchvision import transforms
 from matplotlib import pyplot as plt
 
 import random
@@ -60,7 +62,9 @@ def concat_named_images(images_and_names):
 
 	draw=ImageDraw.Draw(dst_img)
 	for src_img,name in images_and_names:
+		#tmp=to_pil_image((src_img).float())
 		tmp=transforms.ToPILImage()((src_img).float())
+
 		dst_img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
 		
 
@@ -281,7 +285,7 @@ class AddImageNoise(object):
 		self.rgbness=rgbness
 		scale2x_weights = torch.ones([3,1,2,2])
 
-		self.conv_scale2x = torch.nn.ConvTranspose2d(in_channels=3,out_channels=3,kernel_size=2,stride=2,padding=>
+		self.conv_scale2x = torch.nn.ConvTranspose2d(in_channels=3,out_channels=3,kernel_size=2,stride=2,groups=3,dilation=2)
 		#self.conv_scale2x = torch.nn.Conv2d(3, 3, 2, 1, 0, 2, 1, False)
 		self.conv_scale2x.weight = torch.nn.Parameter(scale2x_weights,False)
 
@@ -294,8 +298,7 @@ class AddImageNoise(object):
 		for amount in self.amounts:
 			rnd = make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone,self.rgbness)
 
-			while subnoise.shape[1] < sample.shape[1]:
-                rnd = self.conv_scale2x(rnd)
+			rnd=resize(rnd)
 
 			noise_width*=2
 			sample = torch.add( sample, rnd )
@@ -341,8 +344,8 @@ def make_dataloader(dirname="../training_images/",show=False):
 	if show:
 		for x in range(0,4):
 			(data,target)=dataset[x]
-			transforms.ToPILImage()((data).float()).show()
-			transforms.ToPILImage()((target).float()).show()
+			to_pil_image((data).float()).show()
+			to_pil_image((target).float()).show()
 	return DataLoader(
 		dataset,
 		batch_size=4, 
@@ -439,7 +442,7 @@ def  train_epoch(device, model,opt, dataloader,progress):
 		#todo use timer..
 		if model.iter==model.nextshow:
 			visualize_progress(model,progress,t_elapsed,loss.item(),data[0],output[0],target[0])
-			model.nextshow+=128	
+			model.nextshow+=8
 		
 		opt.zero_grad()
 
@@ -465,7 +468,7 @@ def makedir(x):
 	
 def main(argv):
 
-	inputdir,outputdir= "training_images/","trained_models/"
+	inputdir,outputdir= "../../training_images_few/","trained_models/"
 	learning_rate = 0.1
 	try:
 		opts, args = getopt.getopt(argv,"hi:o:r:",["indir=","outdir=","learningrate="])
