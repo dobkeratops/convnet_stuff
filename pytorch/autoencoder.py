@@ -2,7 +2,6 @@ import torch
 import numpy
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
 import torch.nn.functional as F
 import psutil
 import sys,getopt
@@ -37,6 +36,14 @@ def debug(*a):
 def show_tensors_named(images_and_names):
 	img = concat_named_images(images_and_names)
 	img.show()
+
+def to_pil_image(src):
+        arr = src.detach().numpy()
+        
+        arr=numpy.transpose(arr.astype('uint8'),(1,2,0))
+        print(arr.shape,arr.dtype)
+        img = Image.fromarray(arr)
+        return img
 
 def concat_named_images(images_and_names):
 	total_width=0
@@ -75,7 +82,6 @@ def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
 	draw.text(((width-textsize[0])//2,padding_y/2),title, fgcol)
 	dst.paste(img, ((width-img.width)//2, textsize[1]+padding_y) )
 	return dst
-	
 
 
 
@@ -233,7 +239,11 @@ class AutoEncoder(nn.Module):
 
 		return x
 			
- 
+	def visualize_features(self):
+		# make a 1-hot vector for each slot in inner most representation
+		# convolute it with the expansion kernel 
+		for i in range(0,levels):
+			i
 
 
 def check_ae_works():
@@ -269,6 +279,12 @@ class AddImageNoise(object):
 		self.amounts=amounts_at_scales
 		self.noise_deadzone=noise_deadzone
 		self.rgbness=rgbness
+		scale2x_weights = torch.ones([3,1,2,2])
+
+		self.conv_scale2x = torch.nn.ConvTranspose2d(in_channels=3,out_channels=3,kernel_size=2,stride=2,padding=>
+		#self.conv_scale2x = torch.nn.Conv2d(3, 3, 2, 1, 0, 2, 1, False)
+		self.conv_scale2x.weight = torch.nn.Parameter(scale2x_weights,False)
+
 	def __call__(self,sample):
 		# add noise at differnt scales, like fractal clouds
 		# make it work harder to discover real patterns?
@@ -276,11 +292,14 @@ class AddImageNoise(object):
 
 		noise_width=1
 		for amount in self.amounts:
-			rnd = resize(make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone,self.rgbness))
+			rnd = make_noise_tensor(sample.shape, noise_width, amount,self.noise_deadzone,self.rgbness)
+
+			while subnoise.shape[1] < sample.shape[1]:
+                rnd = self.conv_scale2x(rnd)
+
 			noise_width*=2
 			sample = torch.add( sample, rnd )
 
-		#sample=torch.add(sample,rnd)
 		
 		sample=torch.clip(sample,0,1.0)
 		
