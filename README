@@ -7,3 +7,6 @@ goal is to use neural nets to augment retro game/indie game art, with a small/cu
 current training experiments in pytorch_cuda/...
 
 cuda version & cpu version out of sync , cleanpu incoming
+
+during training , throws image showing progress in the current working directory, and writes it to /var/www/html 
+which some linux distros seem to serve out of the box
