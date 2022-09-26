@@ -3,3 +3,7 @@ Testbed for writing convnet inference in opencl
 plus PyTorch program to experiment with training autoencoders and more
 
 goal is to use neural nets to augment retro game/indie game art, with a small/custom lib for integration
+
+current training experiments in pytorch_cuda/...
+
+cuda version & cpu version out of sync , cleanpu incoming
