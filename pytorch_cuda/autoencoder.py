@@ -637,7 +637,7 @@ def main(argv):
 
 
 	print("grabbing dataset.."+inputdir)	
-	dataloader=make_dataloader(inputdir,max=4)
+	dataloader=make_dataloader(inputdir)
 
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
@@ -647,7 +647,7 @@ def main(argv):
 
 	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
-	save_freq=40 #todo save frequency based on time, "once every 10 seconds" raeehr than iterations..
+	save_freq=40 #todo save frequency based on time, once every 10 seconds raeehr than iterations..
 	progress=Progress()
 	for i in range(0,50000):
 		print("training epoch: ",i)
