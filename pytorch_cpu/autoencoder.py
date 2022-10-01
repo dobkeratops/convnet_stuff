@@ -310,11 +310,13 @@ class AddImageNoise(object):
 		
 
 class NoisedImageDataset(Dataset):
-	def __init__(self,dirname): 
+	def __init__(self,dirname,max=1000000000): 
 		print("init dataset from dir: ",dirname)
+		if max<1000000000: print("cap to %d images",max)
 		self.images=[]
 		ishow=1
 		for i,x in enumerate(os.listdir(dirname)):
+			if i>max: break
 			img=Image.open(dirname+x)
 			img=img.resize((255,255))
 			imgarr=numpy.array(img)
@@ -338,9 +340,9 @@ class NoisedImageDataset(Dataset):
 		
 		
 
-def make_dataloader(dirname="../training_images/",show=False):
+def make_dataloader(dirname="../training_images/",max=100000000,show=False):
 
-	dataset = NoisedImageDataset(dirname)
+	dataset = NoisedImageDataset(dirname,max)
 	if show:
 		for x in range(0,4):
 			(data,target)=dataset[x]
@@ -378,8 +380,9 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 	if os.path.isdir("/var/www/html"):
 		print("\tsee progress at http://",get_ip(),"/progress.jpg");
 		img.save("/var/www/html/progress.jpg")
-
-	img.show()
+	else:
+		img.save("progress.jpg")
+		img.show()
 
 class Progress:
 	def __init__(self):

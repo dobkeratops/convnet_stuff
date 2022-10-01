@@ -1,3 +1,4 @@
+from lib2to3.pgen2.tokenize import generate_tokens
 import torch
 import numpy
 import torch.nn as nn
@@ -115,6 +116,7 @@ class AutoEncoder(nn.Module):
 		self.nextshow=5
 		self.channels=channels	# channels per layer
 		self.dropout=dropout
+		self.generate=False
 		
 		self.kernelsize=kernelSize
 		self.skip_connections=skip_connections
@@ -142,7 +144,7 @@ class AutoEncoder(nn.Module):
 				for i in range(0,levels)])
 
 		self.upsample = nn.ModuleList(
-			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2,padding=0,dilation=2, device=g_device)
+			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
 				for i in range(0,self.levels)])
 
 		maxchannels=channels[levels-1]
@@ -208,11 +210,21 @@ class AutoEncoder(nn.Module):
 			if i!=self.uselevel-1:
 					x=self.downsample[i](x)
 			debug("eval ubet", x.shape)
+			debug("size after encode[%d] ="%i,x.shape)
 			level_val.append( x )
 			
 
 		x=level_val[self.uselevel-1]
+
 		debug("latent", x.shape)
+		if self.generate:
+			x=torch.rand(x. shape)
+			sparsity=0.1
+			amplitude=100.0
+			x=torch.sub(x,(1.0-sparsity))
+			x=torch.mul(x,(1.0/(1.0-sparsity))*amplitude)
+			x=torch.clip(x,0.0,amplitude)
+
 		for i in reversed(range(0,self.uselevel)):
 			debug("decdode ",i)
 			if i!=self.uselevel-1:
@@ -220,6 +232,7 @@ class AutoEncoder(nn.Module):
 					x=torch.add(x,level_val[i])
 				x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
+			debug("size after decode [%d] ="%i,x.shape)
 			x=self.activ(self.convup[i](x))
 			
 		# hack. todo - restore original encoder,decoder paths
@@ -340,11 +353,12 @@ class AddImageNoise(object):
 		
 
 class NoisedImageDataset(Dataset):
-	def __init__(self,dirname): 
+	def __init__(self,dirname,max=1000000000): 
 		print("init dataset from dir: ",dirname)
 		self.images=[]
 		ishow=1
 		for i,x in enumerate(os.listdir(dirname)):
+			if i>max: break
 			img=Image.open(dirname+x)
 			img=img.resize((255,255))
 			imgarr=numpy.array(img)
@@ -369,9 +383,9 @@ class NoisedImageDataset(Dataset):
 		
 		
 
-def make_dataloader(dirname="../training_images/",show=False):
+def make_dataloader(dirname="../training_images/",show=False,max=1000000000):
 
-	dataset = NoisedImageDataset(dirname)
+	dataset = NoisedImageDataset(dirname,max)
 	if show:
 		for x in range(0,4):
 			(data,target)=dataset[x]
@@ -432,6 +446,8 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 		f=open("/var/www/html/training_progress.html","w")
 		f.write(make_progress_page(net,progress))
 		f.close()
+	else:
+		img.show()
 
 class Progress:
 	def __init__(self):
@@ -452,14 +468,16 @@ class Progress:
 		# linear
 		plt.subplot(221)
 		
+		plt.subplot(221)
 		plt.yscale('log')
 		plt.ylabel('loss')
 		plt.xlabel('time/s')
-		plt.title('training progress')
-		xs=[p[1] for p in self.loss_graph]
-		ys=[p[0] for p in self.loss_graph]
+		halfway=len(self.loss_graph)//2
+		xs=[p[1] for p in self.loss_graph[halfway:]]
+		ys=[p[0] for p in self.loss_graph[halfway:]]
 		plt.plot(xs,ys)
 		plt.grid(True)
+
 		plt.savefig("loss_graph.jpg")
 		plt.close()
 		return Image.open("loss_graph.jpg")
@@ -468,7 +486,6 @@ class Progress:
 
 def  train_epoch(device, model,opt, dataloader,progress):
 	running_loss=0; num=0
-	
 	
 	print_interval=min(10,len(dataloader)/2)
 	
@@ -520,7 +537,46 @@ def  train_epoch(device, model,opt, dataloader,progress):
 
 				
 			running_loss=0; num=0
-			
+
+def load_model(model,filename):
+	print("loading pretrained model: ",filename)
+	loaded_statedict=torch.load(filename,map_location=g_device)
+	print("\nmodel has items:")
+	
+	not_found=[]
+	not_matched=[]
+	for key in loaded_statedict:
+		if key in model.state_dict():
+			ls=loaded_statedict[key].shape
+			ms=model.state_dict()[key].data.shape
+			if ls !=ms:
+				not_matched.append(key)
+			else:
+				model.state_dict()[key].data = loaded_statedict[key].data
+
+				print("\t",key,"\t", ms,"\t-ok",)
+		else:
+			not_found.append(key)
+	
+	for key in model.state_dict():
+		if not key in loaded_statedict:
+			print("(model key\t",key,"\tnot in file)")
+		
+	if len(not_found)>0:
+		print("current model does not contain pretrained file nodes:",not_found)
+		exit(0)
+
+	if len(not_matched)>0:
+		print("current model shapes do not match those in file:",not_found)
+		for key in not_matched:
+			ls=loaded_statedict[key].shape
+			ms=model.state_dict()[key].data.shape
+
+			print("\t",key,"",ls,"vs",ms)
+
+		exit(0)
+	model.load_state_dict(loaded_statedict)
+	print("file",filename,"loaded fine..")
 
 	
 def makedir(x): 
@@ -528,13 +584,15 @@ def makedir(x):
 	return x
 	
 def main(argv):
+	
+	
 
-	inputdir,outputdir= "../training_images/","current_models/"
+	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
 	learning_rate = 0.1
 	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:",["indir=","outdir=","learningrate="])
+		opts, args = getopt.getopt(argv,"hi:o:r:p:",["indir=","outdir=","learningrate=","pretrained"])
 	except getopt.GetoptError:
-		print('test.py -i <inputfile> -o <outputfile> -l learningrate')
+		print('useage: test.py -i <inputdir> -o <outputdir> -l learningrate -p <pretrained>')
 		sys.exit(2)
 	for opt, arg in opts:
 		if opt == '-h':
@@ -543,10 +601,12 @@ def main(argv):
 		elif opt in ("-i", "--indir"):
 			inputdir = makedir(arg)
 		elif opt in ("-i", "--indir"):
-			
 			outputdir = makedir(arg)
 		elif opt in ("-l", "--outdir"):
 			learningrate= arg
+		elif opt in ("-p", "--pretrained"):
+			print("setting pretrainde model =",arg)
+			pretrained = arg
 
 	print("initializing device..")
 
@@ -564,6 +624,11 @@ def main(argv):
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
 	ae = AutoEncoder(channels=[3,16,32,64,128,128],kernelSize= 5,skip_connections=False)
 
+	
+	if pretrained !=None:
+		print("loading pretrained model:",pretrained)
+		load_model(ae,pretrained)
+
 	print("model config:",ae.config_string())
 	ae.to(device)
 
@@ -572,7 +637,7 @@ def main(argv):
 
 
 	print("grabbing dataset.."+inputdir)	
-	dataloader=make_dataloader(inputdir)
+	dataloader=make_dataloader(inputdir,max=4)
 
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
@@ -582,12 +647,12 @@ def main(argv):
 
 	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
-	save_freq=40 #todo save frequency based on time, "once every 10 
-seconds" raeehr than iterations..
+	save_freq=40 #todo save frequency based on time, "once every 10 seconds" raeehr than iterations..
 	progress=Progress()
 	for i in range(0,50000):
 		print("training epoch: ",i)
 		train_epoch(device, ae,optimizer[0],  dataloader,progress)
+		
 		if (i+1) % 100==0: ae.increase_depth()
 		if i%save_freq == 0:
 			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%8))
