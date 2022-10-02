@@ -498,8 +498,8 @@ def  train_epoch(device, model,opt, dataloader,progress):
 
 	for i,(data,target) in enumerate(dataloader):
 		
-		data.to(device)
-		target.to(device)
+		data= data.to(device)
+		target = target.to(device)
 		debug("where is data,target?",device, data.is_cuda,target.is_cuda)
 #		for j in range(0,data.shape[0]):
 		
@@ -582,11 +582,11 @@ def load_model(model,filename):
 def makedir(x): 
 	if x[-1]!='/': x+='/'
 	return x
+
+def foo():
+	print("foo")	#test something
 	
 def main(argv):
-	
-	
-
 	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
 	learning_rate = 0.1
 	try:
@@ -660,6 +660,7 @@ def main(argv):
 	print("training on some images.")
 	torch.save(ae.state_dict(), "my_trained_ae")
 
-main(sys.argv[1:])
+if __name__ == "__main__":
+	main(sys.argv[1:])
 
 		
