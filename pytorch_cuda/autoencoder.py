@@ -348,35 +348,63 @@ class AddImageNoise(object):
 		
 		
 		return sample
+
+
+def load_image_as_tensor(i, fname,size):
+	img=Image.open(dirname+fname)
+	img=img.resize((size,size))
+	imgarr=numpy.array(img)
+	#imgarr=imgarr[0:255,0:255,0:3]
+	imgarr=torch.tensor(imgarr.transpose((2,0,1)),device=g_device).float()*(1.0/255.0) # numpy HWC -> torch CHW
+
+	if i%32==0:
+		print("img[",i,"] ",fname," size=",img.shape,"device:",img.device)
+
+	return imgarr
+
+def name_ext(fname):
+	x=fname.rfind(".")
+	return fname[0:x],fname[x+1:]
+
+class TransformImageDataset(Dataset):
+	def __init__(self,dirname,max=10000000):
+		print("init dataset from dir: ",dirname)
 		
+		image_pairs={}
+		for i,fname in enumerate(os.listdir(dirname)):
+			if fname[0]=='.':
+				continue
+
+			if not name.contains("_OUTPUT"):
+				fname0,ext=name_ext(fname)
+				image_pairs[fname]=fname0+"_OUTPUT"+ext
+
+		for k in image_pairs:
+			print(k, " -> ",image_pairs[k])
+			img_in=load_image_as_tensor(i,dirname,k,255)
+			img_out=load_image_as_tensor(i,dirname,image_pairs[k],255)
+			self.images.append((img_in,ing_out))
+			
+		exit(0)
+
 
 class NoisedImageDataset(Dataset):
 	def __init__(self,dirname,max=1000000000,noise=0.33): 
 
-
 		print("init dataset from dir: ",dirname)
 		self.images=[]
-		ishow=1
+		
 		for i,fname in enumerate(os.listdir(dirname)):
 			if i>max: break
 			if fname[0]=='.':
 				continue
-			img=Image.open(dirname+fname)
-			img=img.resize((255,255))
-			imgarr=numpy.array(img)
-			#imgarr=imgarr[0:255,0:255,0:3]
-			imgarr=torch.tensor(imgarr.transpose((2,0,1)),device=g_device).float()*(1.0/255.0) # numpy HWC -> torch CHW
-
-			if i>=ishow:
-				print("img[",i,"] ",fname," size=",imgarr.shape,"device:",imgarr.device)
-				ishow*=2
-			self.images.append(imgarr)
+			img=load_image_as_tensor(i,dirname,fname,255)
+			self.images.append(img)
 		print("total images=",len(self.images))
 
 		
 		#self.add_noise=AddImageNoise([0.33,0.33,0.25,0.25,0.25],0.25,0.25)
 		self.add_noise=AddImageNoise([noise],0.25,0.25)
-			
 
 	def __len__(self):
 		return len(self.images)
@@ -385,9 +413,9 @@ class NoisedImageDataset(Dataset):
 		img=self.images[idx];
 		return self.add_noise(img), img
 		
-		
 
 def make_dataloader(dirname="../training_images/",show=False,max=1000000000,noise=0.33):
+	TransformImageDataset("../transform_test")
 
 	n=noise
 	dataset = NoisedImageDataset(dirname,max,noise=n)
