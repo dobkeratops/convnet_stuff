@@ -590,7 +590,19 @@ def makedir(x):
 
 def foo():
 	print("foo")	#test something
+
+def make_layer_channel_list(input_channels,_input_features,_latent_depth,layers):
+	chs=[input_channels]
+	ld=_input_features
+	if _latent_depth==0: _latent_depth=_input_features*(2**layers)
 	
+	for i in range(0,layers-1):
+		chs.append(min(ld,_latent_depth))
+		ld*=2
+	chs.append(_latent_depth)
+	return chs
+
+
 def main(argv):
 	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
 	learning_rate = 0.1
@@ -631,7 +643,7 @@ def main(argv):
 			_kernel_size=int(arg)
 
 		elif opt in ("-p", "--pretrained"):
-			print("setting pretrainde model =",arg)
+			print("setting pretrained model =",arg)
 			pretrained = arg
 
 	print("initializing device..")
@@ -648,18 +660,10 @@ def main(argv):
 	print("building model:")
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 7,skip_connections=True,skip_dropout=False)
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
-	chs=[3]
-	ld=_input_features
-	if _latent_depth==0: _latent_depth=_input_features*(2**layers)
-	
-	for i in range(0,layers-1):
-		chs.append(min(ld,_latent_depth))
-		ld*=2
-	chs.append(_latent_depth)
+	chs=make_layer_channel_list(3,_input_features,_latent_depth,layers)
 
 	ae = AutoEncoder(channels=chs,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
 
-	
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
 		load_model(ae,pretrained)
@@ -670,7 +674,6 @@ def main(argv):
 
 
 	for i,c in enumerate(ae.conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
-
 
 	print("grabbing dataset.."+inputdir)	
 	dataloader=make_dataloader(inputdir,noise=noise_amplitude)
