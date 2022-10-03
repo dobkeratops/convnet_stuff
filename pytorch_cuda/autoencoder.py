@@ -41,38 +41,59 @@ def show_tensors_named(images_and_names):
 	img = concat_named_images(images_and_names)
 	img.show()
 
-def to_pil_image(src):
-        arr = src.cpu().detach().numpy()*255.0
-        src.to(g_device)
-        
-        arr=numpy.transpose(arr.astype('uint8'),(1,2,0))
-        
-        img = Image.fromarray(arr)
-        return img
+def to_pil_image(src,bgcol=(128,128,128),cascaded=True):
+	arr = src.cpu().detach().numpy()*255.0
+	src.to(g_device)
+
+	arr=numpy.transpose(arr.astype('uint8'),(1,2,0))
+
+
+	num_groups=(arr.shape[2]+2)//3;
+	if cascaded:
+		z=max(arr.shape[0]//2,arr.shape[1]//2)
+		z=min( z,max(4,max(arr.shape[0].arr.shape[1])//(num_groups)) )
+		w=num_groups*z+arr.shape[0]
+		h=num_groups*z+arr.shape[1]
+		img=Image.new('RGB',(w,h),bgcol)
+		maxk = arr.shape[2]-1
+		for i in range(0,num_groups):
+		
+			#np.take(arr, indices, axis=3) is equivalent to arr[:,:,:,indices,...].
+			
+			subimg = Image.fromarray(numpy.take(arr, [max(i*3+0,maxk),max(i*3+1,maxk),max(i*3+2,maxk)], 2))
+			img.paste(subimg,(i*z,i*z))
+
+		#img = Image.fromarray(arr)
+		return img
+	else:
+		print("todo non cascaded vis in to_pil_image")
+		exit(0)
 
 def concat_named_images(images_and_names):
 	total_width=0
 	max_height=0 
 	
+	bgcol=(128,128,128)
+	images=[(to_pil_image(a.float()),name,bgcol) for a,name in images_and_names]
 	
-	for s,name in images_and_names:
-		total_width+=s.shape[2]
+	for s,name in images:
+		total_width+=s.width
 		
-		max_height=max(s.shape[1],max_height)
-
-	dst_img=Image.new('RGB',(total_width,max_height))
+		max_height=max(s.height,max_height)
+	
+	dst_img=Image.new('RGB',(total_width,max_height),bgcol)
 	dx=0
 
 	draw=ImageDraw.Draw(dst_img)
-	for src_img,name in images_and_names:
-		tmp=to_pil_image((src_img).float())
+	for src_img,name in images:
+		
 		#tmp=transforms.ToPILImage()((src_img).float())
 
-		dst_img.paste(tmp, (int(dx),int((max_height+tmp.height)/2-tmp.height)))
-		
+		dst_img.paste(src_img, (int(dx),int((max_height+src_img.height)/2-src_img.height)))
 
 		draw.text((dx,0),name, (0,255,0))
-		dx+=tmp.width
+		dx+=src_img.width
+
 	return dst_img
 
 def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
@@ -92,7 +113,7 @@ def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
 
 
 
-class AutoEncoder(nn.Module):
+class EncoderDecoder(nn.Module):
 
 		
 
@@ -109,7 +130,7 @@ class AutoEncoder(nn.Module):
 			+" skipcon="+str(self.skip_connections)\
 			+" dropout="+str(self.dropout)\
 
-	def __init__(self,channels=[3,16,32,64,128],kernelSize= 5,skip_connections=False,dropout=0.25):
+	def __init__(self,channels=[3,16,32,64,128],io_channels=(3,3),kernelSize= 5,skip_connections=False,dropout=0.25):
 		self.shown=None
 		self.iter=0
 		self.nextshow=5
@@ -119,6 +140,7 @@ class AutoEncoder(nn.Module):
 		
 		self.kernelsize=kernelSize
 		self.skip_connections=skip_connections
+		inch,outch=io_channels
 		
 		super().__init__()
 		imagec=3
@@ -129,8 +151,9 @@ class AutoEncoder(nn.Module):
 		
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
-		self.conv = nn.ModuleList([nn.Conv2d(channels[i],channels[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
+		self.conv = nn.ModuleList([nn.Conv2d(channels[i] if i!=0 else inch ,channels[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,levels)])
+		print("sc:",self.conv[0],io_channels)
 
 		# downskip is an attempt to provide skip connetions to &  from the latent space
 		##for i in range(0,levels/2):
@@ -148,7 +171,7 @@ class AutoEncoder(nn.Module):
 
 		maxchannels=channels[levels-1]
 		
-		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
+		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i] if i!=0 else outch, kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,self.levels)])
 		
 		print(self.conv, self.downsample, self.convup,self.upsample)
@@ -255,19 +278,6 @@ class AutoEncoder(nn.Module):
 			i
 
 
-def check_ae_works():
-	ae = Autoencoder()
-	input = torch.randn(16,3,256,256)
-	print("check : input=",input.shape,input.dtype)
-	output = ae.forward(input)
-	print("input=",input.shape, "\noutput=",output.shape)
-	output = ae.forward(input)
-	print("input=",input.shape, "\noutput=",output.shape)
-	output = ae.forward(input)
-	print("input=",input.shape, "\noutput=",output.shape)
-	output = ae.forward(input)
-	print("input=",input.shape, "\noutput=",output.shape)
-
 def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5,rgbness=0.5):
 	#return (torch.rand(shape[0], int(shape[1]/sizediv),int(shape[2]/sizediv))*2.0-1.0)*scale  
 	rgbness=random.random() #override, we will use both grey and rgb noise
@@ -352,8 +362,16 @@ class AddImageNoise(object):
 
 def load_image_as_tensor(i, dirname,fname,size):
 	_fname=dirname+"/"+fname;
+	
 	if not os.path.exists(_fname):
-		return None
+		for x in [".jpg",".JPG",".jpeg",".JPEG",".png",".PNG"]:
+			if os.path.exists(_fname+x):
+				_fname+=x
+				break
+		else:
+			print("error could not load:",_fname)
+			return None
+	
 	img=Image.open(_fname)
 	img=img.resize((size,size))
 	imgarr=numpy.array(img)
@@ -370,10 +388,8 @@ def name_ext(fname):
 	return fname[0:x],fname[x+1:]
 
 class TransformImageDataset(Dataset):
-	def __init__(self,dirname,max=10000000):
-		print("init dataset from dir: ",dirname)
-		self.image_pairs=[]
-		
+	def init_simple(self):
+
 		find_image_pairs={}
 		for i,fname in enumerate(os.listdir(dirname)):
 			if fname[0]=='.':
@@ -393,12 +409,106 @@ class TransformImageDataset(Dataset):
 				print("warning no _OUTPUT for ",k)
 			else:
 				self.image_pairs.append((img_in,img_out))
+
+	def lookup_basename_postfix(self,basenames,name):
+		for i in reversed(range(0,len(name))):
+			name[:name.rfind('.')]
+			if name[i]=='_':
+				if name[0:i] in basenames:
+					return name[0:i],name[i:]
+		
+		return None,None
+
+	def io_channels(self):
+		if len(self.image_io_pairs)==0: return (0,0)
+		first_in,first_out=self.image_io_pairs[0]
+		return (first_in.shape[0],first_out.shape[0])
+
+	def __init__(self,dirname,max_files=10000000,input_output=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT1","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
+		print("init dataset from dir: ",dirname)
+		self.image_io_pairs=[]
+		#self.init_simple()
+		
+		basenames={}
+		channelnames={}
+		potential_input_postfixes,potential_output_postfixes=input_output
+
+		print("finding output images..")
+
+		# todo support either input or output driven
+		# eg foo_[many input names] -> foo_OUTPUT
+		# or foo_INPUT -> foo_[many output names]
+
+		used_inputs={}	# track which input/output postfixes we have
+		used_outputs={}
+
+		def insert_or_inc(ks,k):
+			if k in ks: ks[k]+=1
+			else: ks[k]=1
+
+		for i,fname in enumerate(os.listdir(dirname)):
+			if fname[0]=='.': continue
 			
+			for n,pfx in enumerate(potential_input_postfixes):
+				if pfx in fname:
+					basename=fname[:fname.rfind(pfx)]
+					insert_or_inc(basenames,basename)
+					used_inputs[n]=True
+					break
+
+			for n,pfx in enumerate(potential_output_postfixes):
+				if pfx in fname:
+					basename=fname[:fname.rfind(pfx)]
+					insert_or_inc(basenames,basename)
+					used_outputs[n]=True
+					break
+
+		input_postfixes=[]
+		output_postfixes=[]
+		for n,name in enumerate(potential_input_postfixes):
+			if n in used_inputs: input_postfixes.append(name)
+
+		for n,name in enumerate(potential_output_postfixes):
+			if n in used_outputs: output_postfixes.append(name)
+		
+		if len(input_postfixes)==0: input_postfixes.append("")
+		elif len(output_postfixes)==0: output_postfixes.append("")
+
+		# for each basename: read the inputs..
+		print("used channels:",input_postfixes,output_postfixes)
+		print(basenames)
+		
+		used_chans=0
+		for x in basenames:
+			used_chans=max(used_chans,basenames[x])
+		for x in basenames:
+			if basenames[x]!=used_chans:
+				print("error basename:",basenames[x],"has missing channels\nall images must have the same input/output channels supplied")
+				exit(0)
+
+		for f in basenames:
+			inputs=[]
+			outputs=[]
+			for pfx in input_postfixes:
+				
+				inputs.append(load_image_as_tensor(i,dirname,f+pfx,scale_to))
+
+			for pfx in output_postfixes:
+				outputs.append(load_image_as_tensor(i,dirname,f+pfx,scale_to))
+
+			input = torch.cat(inputs,0)
+			output= torch.cat(outputs,0)
+			print(basename,"\t:io shapes=", input.shape,output.shape)
+
+			self.image_io_pairs.append((input,output))
+
+
+
 	def __len__(self):
-		return len(self.image_pairs)
+		return len(self.image_io_pairs)
 
 	def __getitem__(self,idx):
-		pair=self.image_pairs[idx]
+		pair=self.image_io_pairs[idx]
 		return pair
 
 class NoisedImageDataset(Dataset):
@@ -557,8 +667,8 @@ def  train_epoch(device, model,opt, dataloader,progress):
 
 	for i,(data,target) in enumerate(dataloader):
 		
-		data= data.to(device)
-		target = target.to(device)
+		data=data.to(device)
+		target=target.to(device)
 		debug("where is data,target?",device, data.is_cuda,target.is_cuda)
 #		for j in range(0,data.shape[0]):
 		
@@ -646,7 +756,8 @@ def foo():
 	print("foo")	#test something
 
 def make_layer_channel_list(input_channels,_input_features,_latent_depth,layers):
-	chs=[input_channels]
+	inch,outch=input_channels
+	chs=[max(inch,outch)]
 	ld=_input_features
 	if _latent_depth==0: _latent_depth=_input_features*(2**layers)
 	
@@ -711,12 +822,18 @@ def main(argv):
 	print("using device:",device.type)
 	global g_device
 	g_device=device
+
+	print("grabbing dataset.."+inputdir)	
+	dataloader=make_dataloader(inputdir,noise=noise_amplitude)
+	io_channels=dataloader.dataset.io_channels()
+	print("io channels=",io_channels)
+
 	print("building model:")
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 7,skip_connections=True,skip_dropout=False)
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
-	chs=make_layer_channel_list(3,_input_features,_latent_depth,layers)
+	chs=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
 
-	ae = AutoEncoder(channels=chs,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
+	ae=EncoderDecoder(channels=chs,io_channels=io_channels,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
 
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
@@ -726,11 +843,8 @@ def main(argv):
 	
 	ae.to(device)
 
-
 	for i,c in enumerate(ae.conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
 
-	print("grabbing dataset.."+inputdir)	
-	dataloader=make_dataloader(inputdir,noise=noise_amplitude)
 
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
