@@ -350,15 +350,18 @@ class AddImageNoise(object):
 		return sample
 
 
-def load_image_as_tensor(i, fname,size):
-	img=Image.open(dirname+fname)
+def load_image_as_tensor(i, dirname,fname,size):
+	_fname=dirname+"/"+fname;
+	if not os.path.exists(_fname):
+		return None
+	img=Image.open(_fname)
 	img=img.resize((size,size))
 	imgarr=numpy.array(img)
 	#imgarr=imgarr[0:255,0:255,0:3]
 	imgarr=torch.tensor(imgarr.transpose((2,0,1)),device=g_device).float()*(1.0/255.0) # numpy HWC -> torch CHW
 
 	if i%32==0:
-		print("img[",i,"] ",fname," size=",img.shape,"device:",img.device)
+		print("img[",i,"] ",fname," size=",imgarr.shape,"device:",imgarr.device)
 
 	return imgarr
 
@@ -369,24 +372,35 @@ def name_ext(fname):
 class TransformImageDataset(Dataset):
 	def __init__(self,dirname,max=10000000):
 		print("init dataset from dir: ",dirname)
+		self.image_pairs=[]
 		
-		image_pairs={}
+		find_image_pairs={}
 		for i,fname in enumerate(os.listdir(dirname)):
 			if fname[0]=='.':
 				continue
 
-			if not name.contains("_OUTPUT"):
+			if not "_OUTPUT" in fname:
 				fname0,ext=name_ext(fname)
-				image_pairs[fname]=fname0+"_OUTPUT"+ext
+				find_image_pairs[fname]=fname0+"_OUTPUT"+"."+ext
 
-		for k in image_pairs:
-			print(k, " -> ",image_pairs[k])
+
+		for k in find_image_pairs:
+			print(k, " -> ",find_image_pairs[k])
 			img_in=load_image_as_tensor(i,dirname,k,255)
-			img_out=load_image_as_tensor(i,dirname,image_pairs[k],255)
-			self.images.append((img_in,ing_out))
+			img_out=load_image_as_tensor(i,dirname,find_image_pairs[k],255)
 			
-		exit(0)
+			if img_out is None:
+				print("warning no _OUTPUT for ",k)
+			else:
+				self.image_pairs.append((img_in,img_out))
+			
+	def __len__(self):
+		return len(self.image_pairs)
 
+	def __getitem__(self,idx):
+		print(idx,len(self.image_pairs))
+		pair=self.image_pairs[idx]
+		return pair
 
 class NoisedImageDataset(Dataset):
 	def __init__(self,dirname,max=1000000000,noise=0.33): 
@@ -405,6 +419,7 @@ class NoisedImageDataset(Dataset):
 		
 		#self.add_noise=AddImageNoise([0.33,0.33,0.25,0.25,0.25],0.25,0.25)
 		self.add_noise=AddImageNoise([noise],0.25,0.25)
+		
 
 	def __len__(self):
 		return len(self.images)
@@ -412,21 +427,33 @@ class NoisedImageDataset(Dataset):
 	def __getitem__(self,idx):
 		img=self.images[idx];
 		return self.add_noise(img), img
-		
 
 def make_dataloader(dirname="../training_images/",show=False,max=1000000000,noise=0.33):
-	TransformImageDataset("../transform_test")
 
-	n=noise
-	dataset = NoisedImageDataset(dirname,max,noise=n)
+	is_transform_pairs=	False
+	print("dataset: ",dirname,"\tlen=",len(os.listdir(dirname)))
+	for i,fname in enumerate(os.listdir(dirname)):
+		if "_OUTPUT" in fname:
+			is_transform_pairs=True
+
+	dataset=None
+	if is_transform_pairs:
+		print("input/_OUTPUT pairs detected - setting up dataloader for image transformation")
+		dataset=TransformImageDataset(dirname)
+	else:
+		print("plain image directory - creating noised image dataloader for autoencoder training")
+		n=noise
+		dataset = NoisedImageDataset(dirname,max,noise=n)
+
 	if show:
 		for x in range(0,4):
 			(data,target)=dataset[x]
 			to_pil_image((data).float()).show()
 			to_pil_image((target).float()).show()
+
 	return DataLoader(
 		dataset,
-		batch_size=4, 
+		batch_size=min(4,len(dataset)), 
 		shuffle=True)
 
 def paste_images_vertical(src_imgs):
