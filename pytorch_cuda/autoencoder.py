@@ -398,7 +398,6 @@ class TransformImageDataset(Dataset):
 		return len(self.image_pairs)
 
 	def __getitem__(self,idx):
-		print(idx,len(self.image_pairs))
 		pair=self.image_pairs[idx]
 		return pair
 
