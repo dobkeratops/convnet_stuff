@@ -102,7 +102,6 @@ class AutoEncoder(nn.Module):
 		return self.eval_unet(x)
 	
 
-
 	def config_string(self):
 		return	" channels="+str(self.channels)\
 			+" ks="+str(self.kernelsize)+"x"+str(self.kernelsize)\
@@ -309,7 +308,6 @@ class AddImageNoise(object):
 		# add noise at differnt scales, like fractal clouds
 		# make it work harder to discover real patterns?
 		#resize=transforms.Resize((sample.shape[1],sample.shape[2]))
-
 		noise_width=1
 		#todo - extract o fractal noise function
 		for n,amount in enumerate(self.amounts):
@@ -353,25 +351,31 @@ class AddImageNoise(object):
 		
 
 class NoisedImageDataset(Dataset):
-	def __init__(self,dirname,max=1000000000): 
+	def __init__(self,dirname,max=1000000000,noise=0.33): 
+
+
 		print("init dataset from dir: ",dirname)
 		self.images=[]
 		ishow=1
-		for i,x in enumerate(os.listdir(dirname)):
+		for i,fname in enumerate(os.listdir(dirname)):
 			if i>max: break
-			img=Image.open(dirname+x)
+			if fname[0]=='.':
+				continue
+			img=Image.open(dirname+fname)
 			img=img.resize((255,255))
 			imgarr=numpy.array(img)
 			#imgarr=imgarr[0:255,0:255,0:3]
 			imgarr=torch.tensor(imgarr.transpose((2,0,1)),device=g_device).float()*(1.0/255.0) # numpy HWC -> torch CHW
 
 			if i>=ishow:
-				print("img[",i,"] ",x," size=",imgarr.shape,"device:",imgarr.device)
+				print("img[",i,"] ",fname," size=",imgarr.shape,"device:",imgarr.device)
 				ishow*=2
 			self.images.append(imgarr)
 		print("total images=",len(self.images))
 
-		self.add_noise=AddImageNoise([0.33,0.33,0.25,0.25,0.25],0.25,0.25)
+		
+		#self.add_noise=AddImageNoise([0.33,0.33,0.25,0.25,0.25],0.25,0.25)
+		self.add_noise=AddImageNoise([noise],0.25,0.25)
 			
 
 	def __len__(self):
@@ -383,9 +387,10 @@ class NoisedImageDataset(Dataset):
 		
 		
 
-def make_dataloader(dirname="../training_images/",show=False,max=1000000000):
+def make_dataloader(dirname="../training_images/",show=False,max=1000000000,noise=0.33):
 
-	dataset = NoisedImageDataset(dirname,max)
+	n=noise
+	dataset = NoisedImageDataset(dirname,max,noise=n)
 	if show:
 		for x in range(0,4):
 			(data,target)=dataset[x]
@@ -589,10 +594,16 @@ def foo():
 def main(argv):
 	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
 	learning_rate = 0.1
+	noise_amplitude=0.33
+	_dropout=0.25
+	_latent_depth=0
+	_input_features=16
+	_kernel_size=5
+	layers=5
 	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:p:",["indir=","outdir=","learningrate=","pretrained"])
+		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:",["indir=","outdir=","learning_rate=","input_features","pretrained","noise"])
 	except getopt.GetoptError:
-		print('useage: test.py -i <inputdir> -o <outputdir> -l learningrate -p <pretrained>')
+		print('useage: test.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -n <noise amount> -d <dropout> -z <latent depth>')
 		sys.exit(2)
 	for opt, arg in opts:
 		if opt == '-h':
@@ -602,8 +613,23 @@ def main(argv):
 			inputdir = makedir(arg)
 		elif opt in ("-i", "--indir"):
 			outputdir = makedir(arg)
-		elif opt in ("-l", "--outdir"):
-			learningrate= arg
+		elif opt in ("-r", "--learning_rate"):
+			learningrate= float(arg)
+		elif opt in ("-l", "--layers"):
+			layers= int(arg)
+		elif opt in ("-z", "--latent_depth"):
+			_latent_depth= int(arg)
+
+		elif opt in ("-f", "--input_features"):
+			_input_features= int(arg)
+
+		elif opt in ("-n", "--noise"):
+			noise_amplitude= float(arg)
+		elif opt in ("-n", "--dropout"):
+			_dropout= float(arg)
+		elif opt in ("-k", "--kernelsize"):
+			_kernel_size=int(arg)
+
 		elif opt in ("-p", "--pretrained"):
 			print("setting pretrainde model =",arg)
 			pretrained = arg
@@ -622,7 +648,16 @@ def main(argv):
 	print("building model:")
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 7,skip_connections=True,skip_dropout=False)
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
-	ae = AutoEncoder(channels=[3,16,32,64,128,128],kernelSize= 5,skip_connections=False)
+	chs=[3]
+	ld=_input_features
+	if _latent_depth==0: _latent_depth=_input_features*(2**layers)
+	
+	for i in range(0,layers-1):
+		chs.append(min(ld,_latent_depth))
+		ld*=2
+	chs.append(_latent_depth)
+
+	ae = AutoEncoder(channels=chs,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
 
 	
 	if pretrained !=None:
@@ -630,6 +665,7 @@ def main(argv):
 		load_model(ae,pretrained)
 
 	print("model config:",ae.config_string())
+	
 	ae.to(device)
 
 
@@ -637,7 +673,7 @@ def main(argv):
 
 
 	print("grabbing dataset.."+inputdir)	
-	dataloader=make_dataloader(inputdir)
+	dataloader=make_dataloader(inputdir,noise=noise_amplitude)
 
 
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
