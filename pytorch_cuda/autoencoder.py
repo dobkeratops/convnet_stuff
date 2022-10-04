@@ -51,7 +51,7 @@ def to_pil_image(src,bgcol=(128,128,128),cascaded=True):
 	num_groups=(arr.shape[2]+2)//3;
 	if cascaded:
 		z=max(arr.shape[0]//2,arr.shape[1]//2)
-		z=min( z,max(4,max(arr.shape[0].arr.shape[1])//(num_groups)) )
+		z=min( z,max(4,max(arr.shape[0],arr.shape[1])//(num_groups)) )
 		w=num_groups*z+arr.shape[0]
 		h=num_groups*z+arr.shape[1]
 		img=Image.new('RGB',(w,h),bgcol)
@@ -60,7 +60,7 @@ def to_pil_image(src,bgcol=(128,128,128),cascaded=True):
 		
 			#np.take(arr, indices, axis=3) is equivalent to arr[:,:,:,indices,...].
 			
-			subimg = Image.fromarray(numpy.take(arr, [max(i*3+0,maxk),max(i*3+1,maxk),max(i*3+2,maxk)], 2))
+			subimg = Image.fromarray(numpy.take(arr, [min(i*3+0,maxk),min(i*3+1,maxk),min(i*3+2,maxk)], 2))
 			img.paste(subimg,(i*z,i*z))
 
 		#img = Image.fromarray(arr)
@@ -74,7 +74,7 @@ def concat_named_images(images_and_names):
 	max_height=0 
 	
 	bgcol=(128,128,128)
-	images=[(to_pil_image(a.float()),name,bgcol) for a,name in images_and_names]
+	images=[(to_pil_image(a.float(),bgcol),name) for a,name in images_and_names]
 	
 	for s,name in images:
 		total_width+=s.width
@@ -133,7 +133,7 @@ class EncoderDecoder(nn.Module):
 	def __init__(self,channels=[3,16,32,64,128],io_channels=(3,3),kernelSize= 5,skip_connections=False,dropout=0.25):
 		self.shown=None
 		self.iter=0
-		self.nextshow=5
+		self.nextshow=1
 		self.channels=channels	# channels per layer
 		self.dropout=dropout
 		self.generate=False
@@ -424,7 +424,7 @@ class TransformImageDataset(Dataset):
 		first_in,first_out=self.image_io_pairs[0]
 		return (first_in.shape[0],first_out.shape[0])
 
-	def __init__(self,dirname,max_files=10000000,input_output=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT1","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
+	def __init__(self,dirname,max_files=10000000,input_output=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
 		print("init dataset from dir: ",dirname)
 		self.image_io_pairs=[]
 		#self.init_simple()
@@ -494,12 +494,14 @@ class TransformImageDataset(Dataset):
 				inputs.append(load_image_as_tensor(i,dirname,f+pfx,scale_to))
 
 			for pfx in output_postfixes:
-				outputs.append(load_image_as_tensor(i,dirname,f+pfx,scale_to))
+				x=load_image_as_tensor(i,dirname,f+pfx,scale_to)
+				outputs.append(x)
 
 			input = torch.cat(inputs,0)
 			output= torch.cat(outputs,0)
 			print(basename,"\t:io shapes=", input.shape,output.shape)
-
+			#to_pil_image(output).show()
+			
 			self.image_io_pairs.append((input,output))
 
 
@@ -542,7 +544,7 @@ def make_dataloader(dirname="../training_images/",show=False,max=1000000000,nois
 	is_transform_pairs=	False
 	print("dataset: ",dirname,"\tlen=",len(os.listdir(dirname)))
 	for i,fname in enumerate(os.listdir(dirname)):
-		if "_OUTPUT" in fname:
+		if "_OUTPUT" in fname or "_INPUT" in fname:
 			is_transform_pairs=True
 
 	dataset=None
@@ -606,7 +608,7 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 	img=add_title_to_image(
 		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss)+" "+net.config_string(),	
 		paste_images_vertical([
-			concat_named_images([(input_data," input + noise "),(output[0],"network output Mid"),(output[1],"network output Final"), (target,"target")]),
+			concat_named_images([(input_data," input "),(output[0],"network shortcut output"),(output[1],"network full output"), (target,"target")]),
 			graph]))
 	img.save("training_progress.jpg")	# save the progress image in the current working director regardless. (TODO,save alongside net.)
 	if os.path.isdir("/var/www/html"):
@@ -780,7 +782,12 @@ def main(argv):
 	try:
 		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:",["indir=","outdir=","learning_rate=","input_features","pretrained","noise"])
 	except getopt.GetoptError:
-		print('useage: test.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -n <noise amount> -d <dropout> -z <latent depth>')
+		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -n <noise amount> -d <dropout> -z <latent depth>')
+		print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
+		print("\treads images from ../multi_input_test, uses kernel size 5x5, 32 input features, 256 latent features, 3 layers")
+		print("\tneeds images named foo_INPUT0.jpg,foo_INPUT1.jpg,foo_OUTPUT0.jpg , bar_INPUT0.jpg,bar_INPUT1.jpg etc")
+		print("\twill train  (_INPUT0,_INPUT1) -> _OUTPUT0 ")
+		print("")
 		sys.exit(2)
 	for opt, arg in opts:
 		if opt == '-h':
