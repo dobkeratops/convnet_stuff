@@ -16,9 +16,9 @@ TRAINING (WIP)
 use pytorch_cuda/autoencoder.py   *
 
 example invocation:
-python3 pytorch_cuda/autoencoder.py -i my_image_dir   -o 
-my_trained_model_dir    -k 5  -f 24 -z 256 -l 5 -s
+python3 pytorch_cuda/autoencoder.py -i my_image_dir   -o my_trained_model_dir    -k 5  -f 24 -z 256 -l 5 -s
 
+-i	: directory holding source images
 -k 5 	: convolutional filter kernels, 5x5
 -f 24	: 1st (and final) layer of features
 -z 256	: latent space feature depth 
@@ -26,7 +26,7 @@ my_trained_model_dir    -k 5  -f 24 -z 256 -l 5 -s
 -s	:enable Skip Connections, "u-net" style (default is off, it will 
 use a single shortcut output from the middle instead) 
 -o my_trained_model_dir	: where it periodically saves the trained models, 
-.pty state_dict files
+.pty format state_dict files
 
 this expects:
 image input/outputs in 'my_image_dir'
