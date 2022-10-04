@@ -185,8 +185,18 @@ class EncoderDecoder(nn.Module):
 		print("make decoder ")
 		self.decoder_conv = nn.ModuleList([nn.Conv2d(decoder_ch[i+1],decoder_ch[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,self.levels)])
+
+		if self.skip_connections:
+			self.skip_combine = nn.ModuleList(
+				[	
+					nn.Conv2d(encoder_ch[i+1],decoder_ch[i+1], kernel_size=1, stride=1, padding='same', device=g_device)
+					for i in range(0,self.levels)
+				]
+			)
+		else:
+			self.skip_combine=None
 		
-		print(self.encoder_conv, self.downsample, self.decoder_conv,self.upsample)
+		print(self.encoder_conv, self.downsample, self.decoder_conv,self.upsample,self.skip_combine)
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.avpool = nn.AvgPool2d(2,2,0)
 		self.avpool3 = nn.AvgPool2d(3,2,0)
@@ -224,24 +234,29 @@ class EncoderDecoder(nn.Module):
 			debug("decdode ",i)
 			if i!=self.uselevel-1:
 				if self.skip_connections:
-					x=torch.add(x,level_val[i])
+					#x=torch.add(x,level_val[i])
+					
+					x=self.activ(x+self.skip_combine[i](level_val[i]))
 				x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			debug("size after decode [%d] ="%i,x.shape)
 			x=self.activ(self.decoder_conv[i](x))
 			
 		#evaluate the shortcut from the middle of the net
-		midx=level_val[2]
-		for i in reversed(range(0,3)):
-			debug("decdode ",i)
-			if i!=self.uselevel-1:
-				if self.skip_connections:
-					midx=torch.add(midx,level_val[i])
-				midx=self.upsample[i](midx)
-			if self.dropout>0.01: midx=nn.Dropout(self.dropout)(midx)
-			midx=self.activ(self.decoder_conv[i](midx))
-		
-		return (('shortcut',midx),('final',x))
+		if not self.skip_connections:
+			midx=level_val[2]
+			for i in reversed(range(0,3)):
+				debug("decdode ",i)
+				if i!=self.uselevel-1:
+					if self.skip_connections:
+						midx=torch.add(midx,level_val[i])
+
+					midx=self.upsample[i](midx)
+				if self.dropout>0.01: midx=nn.Dropout(self.dropout)(midx)
+				midx=self.activ(self.decoder_conv[i](midx))
+			return (('shortcut',midx),('final',x))
+		else:
+			return (('final',x),('final',x))
 			
 	def visualize_features(self):
 		# make a 1-hot vector for each slot in inner most representation
@@ -786,11 +801,12 @@ def main(argv):
 	_latent_depth=0
 	_input_features=16
 	_kernel_size=5
+	_skip_connections=False
 	layers=5
 	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise="])
+		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:s",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise=","skip_connections"])
 	except getopt.GetoptError:
-		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -n <noise amount> -d <dropout> -z <latent depth>')
+		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -s -n <noise amount> -d <dropout> -z <latent depth>')
 		print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
 		print("\treads images from ../multi_input_test, uses kernel size 5x5, 32 input features, 256 latent features, 3 layers")
 		print("\tneeds images named foo_INPUT0.jpg,foo_INPUT1.jpg,foo_OUTPUT0.jpg , bar_INPUT0.jpg,bar_INPUT1.jpg etc")
@@ -811,6 +827,8 @@ def main(argv):
 			layers= int(arg)
 		elif opt in ("-z", "--latent_depth"):
 			_latent_depth= int(arg)
+		elif opt in ("-s", "--skip_connections"):
+			_skip_connections= True
 
 		elif opt in ("-f", "--input_features"):
 			_input_features= int(arg)
@@ -848,7 +866,7 @@ def main(argv):
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
 	encoder_ch,decoder_ch=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
 
-	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
+	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=_skip_connections,dropout=_dropout)
 
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
@@ -859,9 +877,6 @@ def main(argv):
 	ae.to(device)
 
 	for i,c in enumerate(ae.encoder_conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
-
-
-
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
 	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=learning_rate,weight_decay=1e-8),
