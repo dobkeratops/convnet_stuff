@@ -126,11 +126,37 @@ def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
 
 
 
+
 class EncoderDecoder(nn.Module):
 	def forward(self,x):
 		self.iter+=1
 		return self.eval_unet(x)
-	
+
+	def estimate_cost(self,encoder_ch,decoder_ch,ksize):
+		total=0
+		quotient=1
+		params=0
+		
+		for i in range(0,len(encoder_ch)-1):
+			
+			x=encoder_ch[i]*(1+encoder_ch[i+1])*ksize*ksize 
+			x+=encoder_ch[i+1]*encoder_ch[i+1]	#downsample
+			params+=x
+			total+=x/quotient
+			quotient*=2*2
+
+		quotient=1
+		for i in range(0,len(decoder_ch)-1):
+			x=decoder_ch[i]*(1+decoder_ch[i+1])*ksize*ksize
+			x+=decoder_ch[i+1]*decoder_ch[i] #upsample
+			if i>0: #skip connection combiner cost
+				x+=encoder_ch[i]*decoder_ch[i]
+			params+=x
+			total+=x/quotient
+			quotient*=2*2
+
+		return {'flops_per_output_pixel':total,'params':params}
+		
 
 	def config_string(self):
 		return	" channels="+str(self.channels)\
@@ -159,9 +185,12 @@ class EncoderDecoder(nn.Module):
 		self.levels=levels
 		self.uselevel=max(1,self.levels)
 
+		
+
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
-		
+		cost=self.estimate_cost(encoder_ch,decoder_ch,kernelSize) 
+		print("estimated compute cost", cost,"\ttflops @1920x1080x60fps:",cost['flops_per_output_pixel']*1920*1080*60.0/1e12,"\tparams fp32(mb)",cost['params']*4/1024/1024)
 		print("make encoder ")
 		self.encoder_conv = nn.ModuleList([nn.Conv2d(encoder_ch[i],encoder_ch[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,levels)])
@@ -471,10 +500,14 @@ class TransformImageDataset(Dataset):
 		used_chans=0
 		for x in basenames:
 			used_chans=max(used_chans,basenames[x])
+		fail=False
 		for x in basenames:
 			if basenames[x]!=used_chans:
-				print("error basename:",basenames[x],"has missing channels\nall images must have the same input/output channels supplied")
-				exit(0)
+				print("error basename:\t",x,"\thas missing channels\n")
+				fail=True
+		if fail: 
+			print("all images must have the same input/output channels supplied")
+			exit(0)
 
 		for f in basenames:
 			inputs=[]
