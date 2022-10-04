@@ -29,24 +29,30 @@ use a single shortcut output from the middle instead)
 .pty format state_dict files
 
 this expects:
-image input/outputs in 'my_image_dir'
+example input&outputs in 'my_image_dir', according to this naming 
+convention:
+
 imagename1_INPUT0.JPG  , imagename1_INPUT1.JPG  , imagename1_OUTPUT.JPG
-anotherimage_INPUT0.JPG  , anotherimage_INPUT1.JPG  , 
-anotherimage_OUTPUT.JPG
+anotherimage_INPUT0.JPG  , anotherimage_INPUT1.JPG  , anotherimage_OUTPUT.JPG
 
-etc to train *_INPUT0, *_INPUT1 -> *_OUTPUT (6 -> 3 channels total)
+etc to train *_INPUT0, *_INPUT1 -> *_OUTPUT ( 6 -> 3 channels total
+(rgb0,rgb1)->rgb
 
-it's also possible to train single input -> multiple outputs,
+it can alsoo train single input -> multiple outputs,
 e.g.
 foo_INPUT.JPG  ->  foo_OUTPUT0.JPG  foo_OUTPUT1.JPG
 bar_INPUT.JPG ->  foo_OUTPUT0.JPG foo_OUTPUT1.JPG 
 etc
 
-multi in -> multi out is untested..
+multi in -> multi out is untested
 
 (* it started life as an autoencoder and may stil get a feature to 
 autencode more inputs, with a different decoder branch?)
 
+It uses a single encoder and decoder to take in and generate all the 
+channels, essentially treating it as a deeper image,they must have some 
+kind of correlation (i.e. multiple view inputs would not work yet, this is 
+on the TODO list..)
 
 Watch training progress on localhost/training_progress.html  , tested on 
 ubuntu which serves var/www/html . if it doeesn't find this it will write 
