@@ -38,30 +38,44 @@ def debug(*a):
 	pass
 
 def show_tensors_named(images_and_names):
-	img = concat_named_images(images_and_names)
+	img = concat_named_images_horiz(images_and_names)
 	img.show()
 
-def to_pil_image(src,bgcol=(128,128,128),cascaded=True):
+
+
+def add_color_sat(s0,s1):
+	r0,g0,b0=s0
+	r1,g1,b1=s1
+	clamp255 = lambda a: max(0,min(a,255))
+	return (clamp255(r0+r1),clamp255(g0+g1),clamp255(b0+b1))
+
+def to_pil_image(src,bgcol=(128,128,128),cascaded=True,border=8):
 	arr = src.cpu().detach().numpy()*255.0
 	src.to(g_device)
 
+	
 	arr=numpy.transpose(arr.astype('uint8'),(1,2,0))
 
-
 	num_groups=(arr.shape[2]+2)//3;
+	subbg=add_color_sat(bgcol,(-16,-16,-16))
 	if cascaded:
 		z=max(arr.shape[0]//2,arr.shape[1]//2)
 		z=min( z,max(4,max(arr.shape[0],arr.shape[1])//(num_groups)) )
-		w=num_groups*z+arr.shape[0]
-		h=num_groups*z+arr.shape[1]
+		iw,ih=arr.shape[0],arr.shape[1]
+		w=(num_groups-1)*z+iw+border*2
+		h=(num_groups-1)*z+ih+border*2
 		img=Image.new('RGB',(w,h),bgcol)
 		maxk = arr.shape[2]-1
+		#img.paste(subbg,[1,1,w-1,h-1])
+		draw=ImageDraw.Draw(img)
+		sb=border/2
+		draw.polygon([(sb,sb),(iw+sb,sb),(w-sb,h-sb-ih),(w-sb,h-sb),(w-sb-iw,h-sb),(sb,ih+sb)], subbg)
 		for i in range(0,num_groups):
 		
 			#np.take(arr, indices, axis=3) is equivalent to arr[:,:,:,indices,...].
 			
 			subimg = Image.fromarray(numpy.take(arr, [min(i*3+0,maxk),min(i*3+1,maxk),min(i*3+2,maxk)], 2))
-			img.paste(subimg,(i*z,i*z))
+			img.paste(subimg,(i*z+border,i*z+border))
 
 		#img = Image.fromarray(arr)
 		return img
@@ -69,26 +83,25 @@ def to_pil_image(src,bgcol=(128,128,128),cascaded=True):
 		print("todo non cascaded vis in to_pil_image")
 		exit(0)
 
-def concat_named_images(images_and_names):
+def concat_named_images_horiz(images_and_names):
 	total_width=0
 	max_height=0 
 	
 	bgcol=(128,128,128)
-	images=[(to_pil_image(a.float(),bgcol),name) for a,name in images_and_names]
 	
-	for s,name in images:
+	images=[(name,to_pil_image(a.float(),bgcol)) for name,a in images_and_names]
+	
+	for name,s in images:
 		total_width+=s.width
-		
 		max_height=max(s.height,max_height)
 	
 	dst_img=Image.new('RGB',(total_width,max_height),bgcol)
 	dx=0
 
+	
 	draw=ImageDraw.Draw(dst_img)
-	for src_img,name in images:
-		
+	for name,src_img in images:
 		#tmp=transforms.ToPILImage()((src_img).float())
-
 		dst_img.paste(src_img, (int(dx),int((max_height+src_img.height)/2-src_img.height)))
 
 		draw.text((dx,0),name, (0,255,0))
@@ -114,10 +127,6 @@ def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
 
 
 class EncoderDecoder(nn.Module):
-
-		
-
-	
 	def forward(self,x):
 		self.iter+=1
 		return self.eval_unet(x)
@@ -130,87 +139,58 @@ class EncoderDecoder(nn.Module):
 			+" skipcon="+str(self.skip_connections)\
 			+" dropout="+str(self.dropout)\
 
-	def __init__(self,channels=[3,16,32,64,128],io_channels=(3,3),kernelSize= 5,skip_connections=False,dropout=0.25):
+	def __init__(self,encoder_ch=[3,16,32,64,128],decoder_ch=[128,64,32,16,3],kernelSize= 5,skip_connections=False,dropout=0.25):
 		self.shown=None
 		self.iter=0
 		self.nextshow=1
-		self.channels=channels	# channels per layer
+		self.channels=(encoder_ch,decoder_ch)	# channels per layer
 		self.dropout=dropout
 		self.generate=False
 		
 		self.kernelsize=kernelSize
 		self.skip_connections=skip_connections
-		inch,outch=io_channels
+		
 		
 		super().__init__()
 		imagec=3
 		dim=32
-		levels=len(channels)-1
+		levels=len(encoder_ch)-1
+		assert(len(encoder_ch)==len(decoder_ch))
 		self.levels=levels
 		self.uselevel=max(1,self.levels)
-		
+
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
-		self.conv = nn.ModuleList([nn.Conv2d(channels[i] if i!=0 else inch ,channels[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
+		
+		print("make encoder ")
+		self.encoder_conv = nn.ModuleList([nn.Conv2d(encoder_ch[i],encoder_ch[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,levels)])
-		print("sc:",self.conv[0],io_channels)
+		
 
 		# downskip is an attempt to provide skip connetions to &  from the latent space
 		##for i in range(0,levels/2):
-			
-			
 		
-		
-		self.downsample = nn.ModuleList(
-			[nn.Conv2d(channels[i+1],channels[i+1], kernel_size=3, stride=2, padding=0, device=g_device)
-				for i in range(0,levels)])
-
+		print("make encoder downsamplers")
+		ds=[]
+		for i in range(0,self.levels):
+			ds.append(nn.Conv2d(encoder_ch[i+1],encoder_ch[i+1], kernel_size=3, stride=2, padding=0, device=g_device))
+		self.downsample = nn.ModuleList(ds)
+		print("make decoder upsample")
+		print(decoder_ch)
 		self.upsample = nn.ModuleList(
-			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
+			[nn.ConvTranspose2d(decoder_ch[i+1],decoder_ch[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
 				for i in range(0,self.levels)])
 
-		maxchannels=channels[levels-1]
-		
-		self.convup = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i] if i!=0 else outch, kernel_size=kernelSize, stride=1,padding='same', device=g_device)
+		#maxchannels=channels[levels-1]
+		print("make decoder ")
+		self.decoder_conv = nn.ModuleList([nn.Conv2d(decoder_ch[i+1],decoder_ch[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
 				for i in range(0,self.levels)])
 		
-		print(self.conv, self.downsample, self.convup,self.upsample)
+		print(self.encoder_conv, self.downsample, self.decoder_conv,self.upsample)
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.avpool = nn.AvgPool2d(2,2,0)
 		self.avpool3 = nn.AvgPool2d(3,2,0)
 		self.activ = nn.ReLU()
-
-	def encoder(self,x,inlevel,outlevel):
-		x0=x
-		debug("input shape=",x.shape)
-		for i in range(inlevel,outlevel):
-			if i>0: x=nn.Dropout(0.25)(x) #never dropout the actual input image channels!
-			x=self.activ(self.conv[i](x))
-			if i!=outlevel-1:
-				x=self.downsample[i](x)
-			debug("encoder[%d]shape output=" % (i),x.shape)
-
-			
-		return x
-
-	def decoder(self,x,inlevel,outlevel):
-		debug("latent shape=",x.shape)
-		for i in reversed(range(inlevel,outlevel)):
-			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
-			if i!=outlevel-1:
-				if self.skip_connections:
-					x=torch.add(x,level_val[i])
-					x*=0.5
-				
-				x=self.upsample[i](x)
-
-			x=self.activ(self.convup[i](x))
-			debug("decoder[%d]shape output=",x.shape)
-		return x
-
-	def encode_decode(self,x,inlevel,outlevel):
-		latent  = self.encoder(x,inlevel,outlevel)
-		return self.decoder(latent,inlevel,outlevel)
 
 	def increase_depth(self):
 		self.uselevel=min(self.uselevel+1,self.levels)
@@ -227,7 +207,7 @@ class EncoderDecoder(nn.Module):
 		
 		for i in range(0,self.uselevel):
 			debug("encode ",i)
-			x=self.conv[i](x)
+			x=self.encoder_conv[i](x)
 			x=self.activ(x )
 			if i!=self.uselevel-1:
 					x=self.downsample[i](x)
@@ -239,13 +219,6 @@ class EncoderDecoder(nn.Module):
 		x=level_val[self.uselevel-1]
 
 		debug("latent", x.shape)
-		if self.generate:
-			x=torch.rand(x. shape)
-			sparsity=0.1
-			amplitude=100.0
-			x=torch.sub(x,(1.0-sparsity))
-			x=torch.mul(x,(1.0/(1.0-sparsity))*amplitude)
-			x=torch.clip(x,0.0,amplitude)
 
 		for i in reversed(range(0,self.uselevel)):
 			debug("decdode ",i)
@@ -255,9 +228,9 @@ class EncoderDecoder(nn.Module):
 				x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			debug("size after decode [%d] ="%i,x.shape)
-			x=self.activ(self.convup[i](x))
+			x=self.activ(self.decoder_conv[i](x))
 			
-		# hack. todo - restore original encoder,decoder paths
+		#evaluate the shortcut from the middle of the net
 		midx=level_val[2]
 		for i in reversed(range(0,3)):
 			debug("decdode ",i)
@@ -266,10 +239,9 @@ class EncoderDecoder(nn.Module):
 					midx=torch.add(midx,level_val[i])
 				midx=self.upsample[i](midx)
 			if self.dropout>0.01: midx=nn.Dropout(self.dropout)(midx)
-			midx=self.activ(self.convup[i](midx))
+			midx=self.activ(self.decoder_conv[i](midx))
 		
-
-		return (midx,x)
+		return (('shortcut',midx),('final',x))
 			
 	def visualize_features(self):
 		# make a 1-hot vector for each slot in inner most representation
@@ -404,11 +376,14 @@ class TransformImageDataset(Dataset):
 			print(k, " -> ",find_image_pairs[k])
 			img_in=load_image_as_tensor(i,dirname,k,255)
 			img_out=load_image_as_tensor(i,dirname,find_image_pairs[k],255)
+			assert(img_in.shape[0]==img_out.shape[0] and img_in.shape[1]==img_out.shape[1],"different sizes for input & output not supported yet(WIP)")
 			
 			if img_out is None:
 				print("warning no _OUTPUT for ",k)
 			else:
 				self.image_pairs.append((img_in,img_out))
+
+		
 
 	def lookup_basename_postfix(self,basenames,name):
 		for i in reversed(range(0,len(name))):
@@ -424,14 +399,14 @@ class TransformImageDataset(Dataset):
 		first_in,first_out=self.image_io_pairs[0]
 		return (first_in.shape[0],first_out.shape[0])
 
-	def __init__(self,dirname,max_files=10000000,input_output=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
+	def __init__(self,dirname,max_files=10000000,input_output_postfixes=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
 		print("init dataset from dir: ",dirname)
 		self.image_io_pairs=[]
 		#self.init_simple()
 		
 		basenames={}
 		channelnames={}
-		potential_input_postfixes,potential_output_postfixes=input_output
+		potential_input_postfixes,potential_output_postfixes=input_output_postfixes
 
 		print("finding output images..")
 
@@ -600,15 +575,24 @@ def make_progress_page(net,progress):	#this is just a page to make it refresh th
 </body>\
 </html>\
 "
+def from_batch(pfx_name,ab,index):
+	return (pfx_name+":"+ab[0], ab[1][index])
+
+def color_to_float(rgb): 
+	r,g,b=rgb
+	return (float(r)*(1.0/255.0),float(g)*(1.0/255.0),float(b)*(1.0/255.0))
 
 def visualize_progress(net,progress,time, loss, input_data, output, target):
 	
-	graph=progress.draw_graph()
+	
 	# if no display , store it in the local webserver ?
+	images=concat_named_images_horiz([("input",input_data),from_batch("output",output[0],0),from_batch("output",output[1],0), ("target",target)])
+
+	graph=progress.draw_graph(size=(images.width,images.width/3))
 	img=add_title_to_image(
 		"time="+("%.2f"%time)+"s loss="+("%.5f"%loss)+" "+net.config_string(),	
 		paste_images_vertical([
-			concat_named_images([(input_data," input "),(output[0],"network shortcut output"),(output[1],"network full output"), (target,"target")]),
+			images,
 			graph]))
 	img.save("training_progress.jpg")	# save the progress image in the current working director regardless. (TODO,save alongside net.)
 	if os.path.isdir("/var/www/html"):
@@ -631,18 +615,21 @@ class Progress:
 	def add_point(self,y):
 		self.loss_graph.append((y,self.time_elapsed()))
 
-	def draw_graph(self,size=(1024,256)):
+	def draw_graph(self,size=(1024,256),bgcol=(128,128,128)):
 		
 		# plot with various axes scales
-		plt.figure()
+		fig=plt.figure()
+		fig.set_facecolor(color_to_float(bgcol))
+		dpi=100 #wtf
+		fig.set_size_inches(size[0]/dpi,size[1]/dpi)
 
 		# linear
-		plt.subplot(221)
+		#plt.subplot(221)
 		
-		plt.subplot(221)
 		plt.yscale('log')
 		plt.ylabel('loss')
 		plt.xlabel('time/s')
+
 		halfway=len(self.loss_graph)//2
 		xs=[p[1] for p in self.loss_graph[halfway:]]
 		ys=[p[0] for p in self.loss_graph[halfway:]]
@@ -651,6 +638,12 @@ class Progress:
 
 		plt.savefig("loss_graph.jpg")
 		plt.close()
+
+		#myaximage = ax.imshow(im,
+         #             aspect='auto',
+                      #extent=(20, 80, 20, 80),
+                      #alpha=0.5)
+
 		return Image.open("loss_graph.jpg")
 
 
@@ -677,18 +670,19 @@ def  train_epoch(device, model,opt, dataloader,progress):
 		#print(data.get_device(),target.get_device())
 		#print( model.conv[0].get_device())
 		output=model(data)
+		_,shortcut_out=output[0]
+		_,final_out=output[1]
 		#loss=crit(output,target)
 
-		loss = loss_function(output[0], target)+loss_function(output[1],target)
+		# todo - multitask trainng - some targets will be missing..
+		loss = loss_function(shortcut_out, target)+loss_function(final_out,target)
 
 		t_elapsed=progress.time_elapsed()
 		
 		#todo use timer..
 		if model.iter==model.nextshow:
-			visualize_progress(model,progress,t_elapsed,loss.item(),data[0],(output[0][0],output[1][0]),target[0])
+			visualize_progress(model,progress,t_elapsed,loss.item(),data[0],output,target[0])
 			model.nextshow+=g_show_interval
-
-			
 		
 		opt.zero_grad()
 
@@ -757,17 +751,31 @@ def makedir(x):
 def foo():
 	print("foo")	#test something
 
-def make_layer_channel_list(input_channels,_input_features,_latent_depth,layers):
-	inch,outch=input_channels
-	chs=[max(inch,outch)]
+def make_layer_channel_list(io_channels,_input_features,_latent_depth,layers):
+	# these can be different because input,output can have different dimensionality and resolution
+	inch,outch=io_channels
+	
 	ld=_input_features
 	if _latent_depth==0: _latent_depth=_input_features*(2**layers)
 	
+	encoder_ch=[inch]
 	for i in range(0,layers-1):
-		chs.append(min(ld,_latent_depth))
+		encoder_ch.append(min(ld,_latent_depth))
 		ld*=2
-	chs.append(_latent_depth)
-	return chs
+	encoder_ch.append(_latent_depth)
+
+	#todo count this the other way, so the ramp works with different depth
+	# currently its duplicate of above logic :/
+	ld = _latent_depth
+	decoder_ch=[outch]
+	ld=_input_features
+	for i in range(0,layers-1):
+		decoder_ch.append(min(ld,_latent_depth))
+		ld*=2
+	decoder_ch.append(_latent_depth)
+	print(encoder_ch,decoder_ch)
+
+	return (encoder_ch,decoder_ch)
 
 
 def main(argv):
@@ -838,9 +846,9 @@ def main(argv):
 	print("building model:")
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 7,skip_connections=True,skip_dropout=False)
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
-	chs=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
+	encoder_ch,decoder_ch=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
 
-	ae=EncoderDecoder(channels=chs,io_channels=io_channels,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
+	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=False,dropout=_dropout)
 
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
@@ -850,7 +858,7 @@ def main(argv):
 	
 	ae.to(device)
 
-	for i,c in enumerate(ae.conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
+	for i,c in enumerate(ae.encoder_conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
 
 
 
