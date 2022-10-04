@@ -11,12 +11,18 @@ import matplotlib
 #import torchvision
 #from torchvision import transforms
 from matplotlib import pyplot as plt
+import cv2
 
 import random
 import os
 from PIL import Image,ImageDraw,ImageFont
 import socket
 
+"""
+If True, progress is displayed with PIL img.show() invoking the system viewer, else: non-blocking with cv2.
+Dynamic view makes more sense when g_show_interval is smaller.
+"""
+show_with_system_viewer = False 
 g_show_interval=1024
 # so we can view progress on web plt.plot()
 # launch on console, console can print handy link to view status.
@@ -650,7 +656,11 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 		f.write(make_progress_page(net,progress))
 		f.close()
 	else:
-		img.show()
+		if show_with_system_viewer: img.show()
+		else: 
+			display_image = numpy.array(img)
+			display_image = cv2.cvtColor(display_image,cv2.COLOR_RGB2BGR)
+			cv2.imshow("PROGRESS", display_image)
 
 class Progress:
 	def __init__(self):
