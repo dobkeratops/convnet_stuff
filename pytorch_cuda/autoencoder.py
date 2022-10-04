@@ -780,7 +780,7 @@ def main(argv):
 	_kernel_size=5
 	layers=5
 	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:",["indir=","outdir=","learning_rate=","input_features","pretrained","noise"])
+		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise="])
 	except getopt.GetoptError:
 		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -n <noise amount> -d <dropout> -z <latent depth>')
 		print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
@@ -795,7 +795,7 @@ def main(argv):
 			sys.exit()
 		elif opt in ("-i", "--indir"):
 			inputdir = makedir(arg)
-		elif opt in ("-i", "--indir"):
+		elif opt in ("-o", "--outdir"):
 			outputdir = makedir(arg)
 		elif opt in ("-r", "--learning_rate"):
 			learningrate= float(arg)
@@ -823,7 +823,7 @@ def main(argv):
 
 	no_mps=True
 	if torch.cuda.is_available(): device=torch.device("cuda")
-	elif torch.backends.mps.is_available() and not no_mps: device = torch.device("mps")
+	elif not no_mps and torch.backends.mps.is_available(): device = torch.device("mps")
 	else: device = torch.device("cpu")
 	 
 	print("using device:",device.type)
