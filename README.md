@@ -1,10 +1,10 @@
 Testbed for writing convnet inference in opencl
 
-plus PyTorch program to experiment with training autoencoders and more
+plus PyTorch program to experiment with training u-nets and more
 
 goal is to use neural nets to augment retro game/indie game art, with a small/custom lib for integration
 
-current training experiments in pytorch_cuda/...
+current training experiments in pytorch/...
 
 cuda version & cpu version out of sync , cleanpu incoming
 
@@ -17,7 +17,7 @@ current network generated output
 
 ## TRAINING (WIP)
 
-use pytorch_cuda/autoencoder.py   *
+use pytorch/trainer.py   *
 
 the idea is to take multiple image planes which could be previous/next 
 frames 
@@ -25,7 +25,7 @@ of video to predict the next, RGB+material markup,
 
 example invocation:
 ```
-python3 pytorch_cuda/autoencoder.py -i my_image_dir   -o my_trained_model_dir    -k 5  -f 24 -z 256 -l 5 -s
+python3 pytorch/trainer.py -i my_image_dir   -o my_trained_model_dir    -k 5  -f 24 -z 256 -l 5 -s
 ```
 
 `-i`	: directory holding source images
