@@ -1,3 +1,5 @@
+import random
+
 from lib2to3.pgen2.tokenize import generate_tokens
 import torch
 import numpy
@@ -11,13 +13,15 @@ import matplotlib
 #import torchvision
 #from torchvision import transforms
 from matplotlib import pyplot as plt
-import cv2
 import random
 import os
 from PIL import Image,ImageDraw,ImageFont
 import socket
+import webbrowser
 
-g_show_interval=1024
+g_page_opened=False
+g_show_interval=256
+g_show_plot=0
 # so we can view progress on web plt.plot()
 # launch on console, console can print handy link to view status.
 def get_ip():
@@ -297,9 +301,9 @@ class EncoderDecoder(nn.Module):
 					midx=self.upsample[i](midx)
 				if self.dropout>0.01: midx=nn.Dropout(self.dropout)(midx)
 				midx=self.activ(self.decoder_conv[i](midx))
-			return (('shortcut',midx),('final',x))
+			return [('shortcut',midx),('final',x)]
 		else:
-			return (('final',x),('final',x))
+			return [('final',x)]
 			
 	def visualize_features(self):
 		# make a 1-hot vector for each slot in inner most representation
@@ -644,12 +648,14 @@ def color_to_float(rgb):
 	r,g,b=rgb
 	return (float(r)*(1.0/255.0),float(g)*(1.0/255.0),float(b)*(1.0/255.0))
 
+
+
 def visualize_progress(net,progress,time, loss, input_data, output, target):
 	
 	
 	# if no display , store it in the local webserver ?
 	
-	images=concat_named_images_horiz([("input",input_data)]+[from_batch("output:",output[i],0) for i in output]+[ ("target",target)]
+	images=concat_named_images_horiz([("input",input_data)]+[from_batch("output:",out,0) for out in output ]+[ ("target",target)])
 	#,from_batch("output",output[1],0), ("target",target)])
 
 	graph=progress.draw_graph(size=(images.width,images.width/3))
@@ -659,19 +665,28 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 			images,
 			graph]))
 	img.save("training_progress.jpg")	# save the progress image in the current working director regardless. (TODO,save alongside net.)
-	if os.path.isdir("/var/www/html"):
-		
-		img.save("/var/www/html/training_progress.jpg")
-		print("\tsee progress at http://"+str(get_ip())+"/training_progress.html");
-		f=open("/var/www/html/training_progress.html","w")
-		f.write(make_progress_page(net,progress))
-		f.close()
-	else:
-		img.show()		
-		display_image = numpy.array(img)
-		display_image = cv2.cvtColor(display_image,cv2.COLOR_RGB2BGR)
 
-		cv2.imshow("TrainingProgress", display_image)
+	serving=True
+	progressdir="var/www/html"
+	if not os.path.isdir(progressdir):
+		progressdir = os.getcwd()
+		serving=False
+	else:
+		print("\tsee progress at http://"+str(get_ip())+"/training_progress.html");
+	if progressdir[-1]!="/": progressdir+="/"
+
+	img.save(progressdir+"training_progress.jpg")
+	
+	f=open(progressdir+"training_progress.html","w")
+	f.write(make_progress_page(net,progress))
+	f.close()
+	global g_page_opened
+	#todo - check if headless or what.
+	if not g_page_opened:
+		g_page_opened=True
+		webbrowser.open("file:///"+progressdir+"training_progress.html")
+	return;
+
 
 class Progress:
 	def __init__(self):
@@ -739,12 +754,17 @@ def  train_epoch(device, model,opt, dataloader,progress):
 		#print(data.get_device(),target.get_device())
 		#print( model.conv[0].get_device())
 		output=model(data)
-		_,shortcut_out=output[0]
-		_,final_out=output[1]
+		#_,shortcut_out=output[0]
+		#_,final_out=output[1]
 		#loss=crit(output,target)
 
 		# todo - multitask trainng - some targets will be missing..
-		loss = loss_function(shortcut_out, target)+loss_function(final_out,target)
+
+		# handle loss from a training process that might return a shortcut
+		# TODO , those key-value pairs will eventually denote different TASKS, which may or may not be present
+		loss =0.0
+		for name,outval in output:
+			loss += loss_function(outval, target)# loss_function(shortcut_out, target)+loss_function(final_out,target)
 
 		t_elapsed=progress.time_elapsed()
 		
@@ -847,7 +867,9 @@ def make_layer_channel_list(io_channels,_input_features,_latent_depth,layers):
 	return (encoder_ch,decoder_ch)
 
 
+
 def main(argv):
+
 	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
 	learning_rate = 0.1
 	noise_amplitude=0.33
