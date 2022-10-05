@@ -461,7 +461,15 @@ class TransformImageDataset(Dataset):
 		first_in,first_out=self.image_io_pairs[0]
 		return (first_in.shape[0],first_out.shape[0])
 
-	def __init__(self,dirname,max_files=10000000,input_output_postfixes=(["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT"],["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT"]),scale_to=255):
+	def __init__(self,dirname,max_files=10000000,
+			input_output_postfixes=(
+				#generic names +ideas for what we'll try to generate to train on..
+				["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT",
+				"_IN_NORMAL","_IN_VEL","_IN_PBR","_IN_AO","_IN_DEPTH","_IN_SHADOW", 
+				"_IN_LIGHT","_IN_LIGHT_DX","_IN_LIGHT_DY","_IN_LIGHT_DZ"],
+				["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT",
+				"_OUT_DEPTH","_OUT_VEL","_OUT_NORMAL","_OUT_PBR","_OUT_AO","_OUT_SHADOW", 
+				"_OUT_LIGHT","_OUT_LIGHT_DX","_OUT_LIGHT_DY","_OUT_LIGHT_DZ"]),scale_to=255):
 		print("init dataset from dir: ",dirname)
 		self.image_io_pairs=[]
 		#self.init_simple()
@@ -880,51 +888,58 @@ def main(argv):
 	_downsample_kernel_size=0
 	_skip_connections=False
 	layers=5
-	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:sd:",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise=","skip_connections","downsample_kernel_size"])
-	except getopt.GetoptError:
-		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -s -n <noise amount> -d <dropout> -z <latent depth>')
-		print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
-		print("\treads images from ../multi_input_test, uses kernel size 5x5, 32 input features, 256 latent features, 3 layers")
-		print("\tneeds images named foo_INPUT0.jpg,foo_INPUT1.jpg,foo_OUTPUT0.jpg , bar_INPUT0.jpg,bar_INPUT1.jpg etc")
-		print("\twill train  (_INPUT0,_INPUT1) -> _OUTPUT0 ")
-		print("")
-		sys.exit(2)
-	for opt, arg in opts:
-		if opt == '-h':
-			print('test.py -i <inputdir> -o <outputdir>')
-			sys.exit()
-		elif opt in ("-i", "--indir"):
-			inputdir = makedir(arg)
-		elif opt in ("-o", "--outdir"):
-			outputdir = makedir(arg)
-		elif opt in ("-r", "--learning_rate"):
-			learningrate= float(arg)
-		elif opt in ("-l", "--layers"):
-			layers= int(arg)
-		elif opt in ("-z", "--latent_depth"):
-			_latent_depth= int(arg)
-		elif opt in ("-s", "--skip_connections"):
-			_skip_connections= True
 
-		elif opt in ("-f", "--input_features"):
-			_input_features= int(arg)
+	if len(sys.argv)==2:
+		inputdir = sys.argv[1]
+	else:
+		try:
+			opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:sd:",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise=","skip_connections","downsample_kernel_size"])
+		except getopt.GetoptError:
+			print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -s -n <noise amount> -d <dropout> -z <latent depth>')
+			print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
+			print("\treads images from ../multi_input_test, uses kernel size 5x5, 32 input features, 256 latent features, 3 layers")
+			print("\tneeds images named foo_INPUT0.jpg,foo_INPUT1.jpg,foo_OUTPUT0.jpg , bar_INPUT0.jpg,bar_INPUT1.jpg etc")
+			print("\twill train  (_INPUT0,_INPUT1) -> _OUTPUT0 ")
+			print("")
+			sys.exit(2)
+		for opt, arg in opts:
+			if opt == '-h':
+				print('test.py -i <inputdir> -o <outputdir>')
+				sys.exit()
+			elif opt in ("-i", "--indir"):
+				inputdir = makedir(arg)
+			elif opt in ("-o", "--outdir"):
+				outputdir = makedir(arg)
+			elif opt in ("-r", "--learning_rate"):
+				learningrate= float(arg)
+			elif opt in ("-l", "--layers"):
+				layers= int(arg)
+			elif opt in ("-z", "--latent_depth"):
+				_latent_depth= int(arg)
+			elif opt in ("-s", "--skip_connections"):
+				_skip_connections= True
 
-		elif opt in ("-d", "--downsample_kernel_size"):
-			_downsample_kernel_size= int(arg)
+			elif opt in ("-f", "--input_features"):
+				_input_features= int(arg)
 
-		elif opt in ("-n", "--noise"):
-			noise_amplitude= float(arg)
-		elif opt in ("-n", "--dropout"):
-			_dropout= float(arg)
-		elif opt in ("-k", "--kernelsize"):
-			_kernel_size=int(arg)
+			elif opt in ("-d", "--downsample_kernel_size"):
+				_downsample_kernel_size= int(arg)
 
-		elif opt in ("-p", "--pretrained"):
-			print("setting pretrained model =",arg)
-			pretrained = arg
+			elif opt in ("-n", "--noise"):
+				noise_amplitude= float(arg)
+			elif opt in ("-n", "--dropout"):
+				_dropout= float(arg)
+			elif opt in ("-k", "--kernelsize"):
+				_kernel_size=int(arg)
+
+			elif opt in ("-p", "--pretrained"):
+				print("setting pretrained model =",arg)
+				pretrained = arg
 
 	print("initializing device..")
+
+	if not os.path.exists(outputdir):
+		os.makedirs(outputdir)
 
 
 	no_mps=True
