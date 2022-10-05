@@ -11,7 +11,7 @@ import matplotlib
 #import torchvision
 #from torchvision import transforms
 from matplotlib import pyplot as plt
-
+import cv2
 import random
 import os
 from PIL import Image,ImageDraw,ImageFont
@@ -132,15 +132,18 @@ class EncoderDecoder(nn.Module):
 		self.iter+=1
 		return self.eval_unet(x)
 
-	def estimate_cost(self,encoder_ch,decoder_ch,ksize):
+	def estimate_cost(self): #argh now i find myself apreciating rust's insistance on param structs etc.
 		total=0
 		quotient=1
 		params=0
+		ksize=self.kernelsize
+		encoder_ch,decoder_ch = self.channels
+		dsksize=self.downsample_kernel_size
 		
 		for i in range(0,len(encoder_ch)-1):
 			
 			x=encoder_ch[i]*(1+encoder_ch[i+1])*ksize*ksize 
-			x+=encoder_ch[i+1]*encoder_ch[i+1]	#downsample
+			x+=encoder_ch[i+1]*encoder_ch[i+1]*dsksize*dsksize	#downsample
 			params+=x
 			total+=x/quotient
 			quotient*=2*2
@@ -148,7 +151,7 @@ class EncoderDecoder(nn.Module):
 		quotient=1
 		for i in range(0,len(decoder_ch)-1):
 			x=decoder_ch[i]*(1+decoder_ch[i+1])*ksize*ksize
-			x+=decoder_ch[i+1]*decoder_ch[i] #upsample
+			x+=decoder_ch[i+1]*decoder_ch[i]*4 #upsample
 			if i>0: #skip connection combiner cost
 				x+=encoder_ch[i]*decoder_ch[i]
 			params+=x
@@ -164,18 +167,25 @@ class EncoderDecoder(nn.Module):
 			+" use="+str(self.uselevel)+"/"+str(self.levels)\
 			+" skipcon="+str(self.skip_connections)\
 			+" dropout="+str(self.dropout)\
+			+" dsks="+str(self.downsample_kernel_size)
 
-	def __init__(self,encoder_ch=[3,16,32,64,128],decoder_ch=[128,64,32,16,3],kernelSize= 5,skip_connections=False,dropout=0.25):
+	def __init__(self,encoder_ch=[3,16,32,64,128],decoder_ch=[128,64,32,16,3],kernelSize= 5,skip_connections=False,dropout=0.25,downsample_kernel_size=3):
 		self.shown=None
 		self.iter=0
 		self.nextshow=1
 		self.channels=(encoder_ch,decoder_ch)	# channels per layer
 		self.dropout=dropout
 		self.generate=False
+		self.downsample_kernel_size=downsample_kernel_size
 		
 		self.kernelsize=kernelSize
 		self.skip_connections=skip_connections
-		
+
+		latent_dim=encoder_ch[len(encoder_ch)-1]
+		#self.latent_space_vis = nn.ModuleList([nn.Conv2d(latent_dim,3,1),nn.Conv2d(3,latent+dim,1)])
+		#TODO an internal translator layer between 'encoder_ch' , 'decoder_ch'
+		# such that they dont actually have to be the same dimensionality
+		# they will eventually be task branches.
 		
 		super().__init__()
 		imagec=3
@@ -185,11 +195,9 @@ class EncoderDecoder(nn.Module):
 		self.levels=levels
 		self.uselevel=max(1,self.levels)
 
-		
-
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
-		cost=self.estimate_cost(encoder_ch,decoder_ch,kernelSize) 
+		cost=self.estimate_cost() 
 		print("estimated compute cost", cost,"\ttflops @1920x1080x60fps:",cost['flops_per_output_pixel']*1920*1080*60.0/1e12,"\tparams fp32(mb)",cost['params']*4/1024/1024)
 		print("make encoder ")
 		self.encoder_conv = nn.ModuleList([nn.Conv2d(encoder_ch[i],encoder_ch[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
@@ -200,10 +208,15 @@ class EncoderDecoder(nn.Module):
 		##for i in range(0,levels/2):
 		
 		print("make encoder downsamplers")
-		ds=[]
-		for i in range(0,self.levels):
-			ds.append(nn.Conv2d(encoder_ch[i+1],encoder_ch[i+1], kernel_size=3, stride=2, padding=0, device=g_device))
-		self.downsample = nn.ModuleList(ds)
+
+		if self.downsample_kernel_size>0:
+			ds=[]
+			for i in range(0,self.levels):
+				ds.append(nn.Conv2d(encoder_ch[i+1],encoder_ch[i+1], kernel_size=3, stride=2, padding=0, device=g_device))
+			self.downsample = nn.ModuleList(ds)
+		else:
+			self.downsample = None
+
 		print("make decoder upsample")
 		print(decoder_ch)
 		self.upsample = nn.ModuleList(
@@ -249,7 +262,8 @@ class EncoderDecoder(nn.Module):
 			x=self.encoder_conv[i](x)
 			x=self.activ(x )
 			if i!=self.uselevel-1:
-					x=self.downsample[i](x)
+				
+				x=self.downsample[i](x) if self.downsample else self.maxpool(x)
 			debug("eval ubet", x.shape)
 			debug("size after encode[%d] ="%i,x.shape)
 			level_val.append( x )
@@ -420,7 +434,7 @@ class TransformImageDataset(Dataset):
 			print(k, " -> ",find_image_pairs[k])
 			img_in=load_image_as_tensor(i,dirname,k,255)
 			img_out=load_image_as_tensor(i,dirname,find_image_pairs[k],255)
-			assert(img_in.shape[0]==img_out.shape[0] and img_in.shape[1]==img_out.shape[1],"different sizes for input & output not supported yet(WIP)")
+			assert img_in.shape[0]==img_out.shape[0] and img_in.shape[1]==img_out.shape[1],"different sizes for input & output not supported yet(WIP)"
 			
 			if img_out is None:
 				print("warning no _OUTPUT for ",k)
@@ -634,7 +648,9 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 	
 	
 	# if no display , store it in the local webserver ?
-	images=concat_named_images_horiz([("input",input_data),from_batch("output",output[0],0),from_batch("output",output[1],0), ("target",target)])
+	
+	images=concat_named_images_horiz([("input",input_data)]+[from_batch("output:",output[i],0) for i in output]+[ ("target",target)]
+	#,from_batch("output",output[1],0), ("target",target)])
 
 	graph=progress.draw_graph(size=(images.width,images.width/3))
 	img=add_title_to_image(
@@ -644,13 +660,18 @@ def visualize_progress(net,progress,time, loss, input_data, output, target):
 			graph]))
 	img.save("training_progress.jpg")	# save the progress image in the current working director regardless. (TODO,save alongside net.)
 	if os.path.isdir("/var/www/html"):
+		
 		img.save("/var/www/html/training_progress.jpg")
 		print("\tsee progress at http://"+str(get_ip())+"/training_progress.html");
 		f=open("/var/www/html/training_progress.html","w")
 		f.write(make_progress_page(net,progress))
 		f.close()
 	else:
-		img.show()
+		img.show()		
+		display_image = numpy.array(img)
+		display_image = cv2.cvtColor(display_image,cv2.COLOR_RGB2BGR)
+
+		cv2.imshow("TrainingProgress", display_image)
 
 class Progress:
 	def __init__(self):
@@ -834,10 +855,11 @@ def main(argv):
 	_latent_depth=0
 	_input_features=16
 	_kernel_size=5
+	_downsample_kernel_size=0
 	_skip_connections=False
 	layers=5
 	try:
-		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:s",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise=","skip_connections"])
+		opts, args = getopt.getopt(argv,"hi:o:r:p:n:k:z:l:f:sd:",["indir=","outdir=","learning_rate=","input_features=","pretrained=","noise=","skip_connections","downsample_kernel_size"])
 	except getopt.GetoptError:
 		print('useage: autoencoder.py -i <inputdir> -o <outputdir> -k <kernelsize> -r <learningrate> -f <inputfeatures> -l <layers> -p <pretrained> -s -n <noise amount> -d <dropout> -z <latent depth>')
 		print("\nexample invocation\n python3 autoencoder.py -i ../multi_input_test -k 5  -f 32 -z 256  -l 3")
@@ -865,6 +887,9 @@ def main(argv):
 
 		elif opt in ("-f", "--input_features"):
 			_input_features= int(arg)
+
+		elif opt in ("-d", "--downsample_kernel_size"):
+			_downsample_kernel_size= int(arg)
 
 		elif opt in ("-n", "--noise"):
 			noise_amplitude= float(arg)
@@ -899,7 +924,7 @@ def main(argv):
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
 	encoder_ch,decoder_ch=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
 
-	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=_skip_connections,dropout=_dropout)
+	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=_skip_connections,dropout=_dropout,downsample_kernel_size=_downsample_kernel_size)
 
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
