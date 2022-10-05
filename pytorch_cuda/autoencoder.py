@@ -20,7 +20,7 @@ import socket
 import webbrowser
 
 g_page_opened=False
-g_show_interval=256
+g_show_interval=10
 g_show_plot=0
 # so we can view progress on web plt.plot()
 # launch on console, console can print handy link to view status.
@@ -265,9 +265,9 @@ class EncoderDecoder(nn.Module):
 			debug("encode ",i)
 			x=self.encoder_conv[i](x)
 			x=self.activ(x )
-			if i!=self.uselevel-1:
+			#if i!=self.uselevel-1:
 				
-				x=self.downsample[i](x) if self.downsample else self.maxpool(x)
+			x=self.downsample[i](x) if self.downsample else self.maxpool(x)
 			debug("eval ubet", x.shape)
 			debug("size after encode[%d] ="%i,x.shape)
 			level_val.append( x )
@@ -284,7 +284,7 @@ class EncoderDecoder(nn.Module):
 					#x=torch.add(x,level_val[i])
 					
 					x=self.activ(x+self.skip_combine[i](level_val[i]))
-				x=self.upsample[i](x)
+			x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			debug("size after decode [%d] ="%i,x.shape)
 			x=self.activ(self.decoder_conv[i](x))
@@ -461,7 +461,14 @@ class TransformImageDataset(Dataset):
 		first_in,first_out=self.image_io_pairs[0]
 		return (first_in.shape[0],first_out.shape[0])
 
-	def __init__(self,dirname,max_files=10000000,
+	def __init__(self,dirname,max_files=10000000,io_postfixes=None):
+		#TODO option to initialise from directory tree eg dirname/input/*  dirname/output/* , or dirname/foo/input.jpg,output.jpg dirname/bar/jpg etc
+		if io_postfixes:
+			self.init_from_filenames(dirname,max_files,io_postfixes)
+		else:
+			self.init_from_filenames(dirname,max_files)
+
+	def init_from_filenames(self,dirname,max_files=10000000,
 			input_output_postfixes=(
 				#generic names +ideas for what we'll try to generate to train on..
 				["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT",
@@ -470,7 +477,7 @@ class TransformImageDataset(Dataset):
 				["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT",
 				"_OUT_DEPTH","_OUT_VEL","_OUT_NORMAL","_OUT_PBR","_OUT_AO","_OUT_SHADOW", 
 				"_OUT_LIGHT_DX","_OUT_LIGHT_DY","_OUT_LIGHT_DZ","_OUT_LIGHT"]),scale_to=255):
-		print("init dataset from dir: ",dirname)
+		print("init dataset from dir: using filename extensions ",dirname)
 		self.image_io_pairs=[]
 		#self.init_simple()
 		
@@ -715,8 +722,8 @@ class Progress:
 		dpi=100 #wtf
 		fig.set_size_inches(size[0]/dpi,size[1]/dpi)
 
-		# linear
-		#plt.subplot(221)
+		
+		#plt.subplot((1,1,1))
 		
 		plt.yscale('log')
 		plt.ylabel('loss')
