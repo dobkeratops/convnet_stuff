@@ -129,6 +129,7 @@ def add_title_to_image(title,img,bgcol=(192,192,192),fgcol=(64,64,64)):
 
 class Encoder(nn.Module):
 	def __init__(self,channels=[3,16,32,64,128],kernelSize=5,dropout=0.25,downsample_kernel_size=3):
+		super().__init__()
 		self.channels=channels
 		self.kernel_size=kernelSize
 		self.dropout=dropout
@@ -147,23 +148,14 @@ class Encoder(nn.Module):
 			self.downsample = nn.ModuleList(ds)
 		else:
 			self.downsample = None		
+		self.maxpool = nn.MaxPool2d(2,2,0)
+		self.activ = nn.ReLU()
 
 	def forward(self,x):
-		pass
-
-
-class EncoderDecoder(nn.Module):
-	def forward(self,input):
-		self.iter+=1
-		debug("eval unet ",input.shape)
 		level_val=[]
-		x=input
-		debug("eval unet on input:where?",input.is_cuda)
-
-		
-		for i in range(0,self.uselevel):
+		for i in range(0,self.levels):
 			debug("encode ",i)
-			x=self.encoder_conv[i](x)
+			x=self.conv[i](x)
 			x=self.activ(x )
 			#if i!=self.uselevel-1:
 				
@@ -171,39 +163,64 @@ class EncoderDecoder(nn.Module):
 			debug("eval ubet", x.shape)
 			debug("size after encode[%d] ="%i,x.shape)
 			level_val.append( x )
-			
 
-		x=level_val[self.uselevel-1]
+#		x=level_val[self.uselevel-1]
+		return level_val
 
-		debug("latent", x.shape)
+class Decoder(nn.Module):
+	def __init__(self,channels=[3,16,32,64,128],kernelSize=5,dropout=0.25,downsample_kernel_size=3,skip_connections=True):
+		super().__init__()
+		self.skip_connections=skip_connections
+		self.channels=channels
+		self.kernel_size=kernelSize
+		self.dropout=dropout
+		self.downsample_kernel_size=downsample_kernel_size
+		self.levels = len(channels)-1
 
-		for i in reversed(range(0,self.uselevel)):
-			debug("decdode ",i)
-			if i!=self.uselevel-1:
+		self.maxpool = nn.MaxPool2d(2,2,0)
+		self.activ = nn.ReLU()
+		self.upsample = nn.ModuleList(
+			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
+				for i in range(0,self.levels)])
+
+		self.conv = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
+				for i in range(0,self.levels)])
+
+
+	def forward(self,level_val):
+
+		x=level_val[len(level_val)-1]
+		for i in reversed(range(0,self.levels)):
+			if i!=self.levels-1:
 				if self.skip_connections:
-					#x=torch.add(x,level_val[i])
-					
-					x=self.activ(x+self.skip_combine[i](level_val[i]))
+					x=self.activ(x+level_val[i])
 			x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
-			debug("size after decode [%d] ="%i,x.shape)
-			x=self.activ(self.decoder_conv[i](x))
-			
-		#evaluate the shortcut from the middle of the net
-		if not self.skip_connections:
-			midx=level_val[2]
-			for i in reversed(range(0,3)):
-				debug("decdode ",i)
-				if i!=self.uselevel-1:
-					if self.skip_connections:
-						midx=torch.add(midx,level_val[i])
+			x=self.activ(self.conv[i](x))
 
-					midx=self.upsample[i](midx)
-				if self.dropout>0.01: midx=nn.Dropout(self.dropout)(midx)
-				midx=self.activ(self.decoder_conv[i](midx))
-			return [('shortcut',midx),('final',x)]
-		else:
-			return [('final',x)]
+		return x
+
+class EncoderDecoder(nn.Module):
+	def forward(self,input):
+		self.iter+=1
+		debug("eval unet ",input.shape)
+		debug("eval unet on input:where?",input.is_cuda)
+
+		level_vals=self.encoder.forward(input)
+
+		debug("latent", level_vals[len(level_vals)-1].shape)
+		# TODO - call this an adapter module
+		# define adapters between different encodings/decodings
+		# for task branches
+		# translate the latent space,
+		# which is an array holding all the skip connections,
+		# final value is the innermost latent tensor
+		for i in range(self.levels-1):
+			level_vals[i] = self.skip_combine[i](level_vals[i])
+
+		x=self.decoder.forward(level_vals)
+
+		return [('final',x)]
 		
 
 	def estimate_cost(self): #argh now i find myself apreciating rust's insistance on param structs etc.
@@ -244,6 +261,7 @@ class EncoderDecoder(nn.Module):
 			+" dsks="+str(self.downsample_kernel_size)
 
 	def __init__(self,encoder_ch=[3,16,32,64,128],decoder_ch=[128,64,32,16,3],kernelSize= 5,skip_connections=False,dropout=0.25,downsample_kernel_size=3):
+		super().__init__()
 		self.shown=None
 		self.iter=0
 		self.nextshow=1
@@ -261,7 +279,6 @@ class EncoderDecoder(nn.Module):
 		# such that they dont actually have to be the same dimensionality
 		# they will eventually be task branches.
 		
-		super().__init__()
 		imagec=3
 		dim=32
 		levels=len(encoder_ch)-1
@@ -272,35 +289,13 @@ class EncoderDecoder(nn.Module):
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
 		cost=self.estimate_cost() 
-		print("estimated compute cost", cost,"\ttflops @1920x1080x60fps:",cost['flops_per_output_pixel']*1920*1080*60.0/1e12,"\tparams fp32(mb)",cost['params']*4/1024/1024)
+		
 		print("make encoder ")
-		self.encoder_conv = nn.ModuleList([nn.Conv2d(encoder_ch[i],encoder_ch[i+1], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
-				for i in range(0,levels)])
-		
-
-		# downskip is an attempt to provide skip connetions to &  from the latent space
-		##for i in range(0,levels/2):
-		
-		print("make encoder downsamplers")
-
-		if self.downsample_kernel_size>0:
-			ds=[]
-			for i in range(0,self.levels):
-				ds.append(nn.Conv2d(encoder_ch[i+1],encoder_ch[i+1], kernel_size=3, stride=2, padding=0, device=g_device))
-			self.downsample = nn.ModuleList(ds)
-		else:
-			self.downsample = None
-
-		print("make decoder upsample")
-		print(decoder_ch)
-		self.upsample = nn.ModuleList(
-			[nn.ConvTranspose2d(decoder_ch[i+1],decoder_ch[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
-				for i in range(0,self.levels)])
-
-		#maxchannels=channels[levels-1]
+		self.encoder = Encoder(encoder_ch,kernelSize,dropout,downsample_kernel_size)
 		print("make decoder ")
-		self.decoder_conv = nn.ModuleList([nn.Conv2d(decoder_ch[i+1],decoder_ch[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
-				for i in range(0,self.levels)])
+		self.decoder = Decoder(decoder_ch,kernelSize,dropout)
+
+		print(encoder_ch,decoder_ch)
 
 		if self.skip_connections:
 			self.skip_combine = nn.ModuleList(
@@ -312,24 +307,13 @@ class EncoderDecoder(nn.Module):
 		else:
 			self.skip_combine=None
 		
-		print(self.encoder_conv, self.downsample, self.decoder_conv,self.upsample,self.skip_combine)
-		self.maxpool = nn.MaxPool2d(2,2,0)
-		self.avpool = nn.AvgPool2d(2,2,0)
-		self.avpool3 = nn.AvgPool2d(3,2,0)
-		self.activ = nn.ReLU()
+		print("create EncoderDecoder done")
 
-	def increase_depth(self):
-		self.uselevel=min(self.uselevel+1,self.levels)
-		
-	def decrease_depth(self):
-		self.uselevel=max(self.uselevel-1,1)
-
-			
-	def visualize_features(self):
-		# make a 1-hot vector for each slot in inner most representation
-		# convolute it with the expansion kernel 
-		for i in range(0,levels):
-			i
+def dump_state_dict(net):
+	print("state_dict():")
+	for k in net.state_dict():
+		v=net.state_dict()[k]
+		print("node:",k,v.size())
 
 
 def make_noise_tensor(shape,sizediv=1, scale=1.0, deadzone=0.5,rgbness=0.5):
@@ -822,11 +806,6 @@ def  train_epoch(device, model,opt, dataloader,progress):
 			interval_av_loss= running_loss/float(num)
 			progress.add_point(interval_av_loss)
 			print("i=",i,"\tt=",t_elapsed,"\tloss=",interval_av_loss)
-#			if interval_av_loss<0.007:
-#				model.increase_depth()
-#			if interval_av_loss>0.02:
-#				model.decrease_depth()
-				
 			running_loss=0; num=0
 
 def load_model(model,filename):
@@ -990,21 +969,22 @@ def main(argv):
 #	ae = AutoEncoder(channels=[3,32,64,128,256],kernelSize= 5,skip_connections=False)
 	encoder_ch,decoder_ch=make_layer_channel_list(io_channels,_input_features,_latent_depth,layers)
 
-	ae=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=_skip_connections,dropout=_dropout,downsample_kernel_size=_downsample_kernel_size)
+	net=EncoderDecoder(encoder_ch,decoder_ch,kernelSize= _kernel_size,skip_connections=_skip_connections,dropout=_dropout,downsample_kernel_size=_downsample_kernel_size)
+	dump_state_dict(net)
 
 	if pretrained !=None:
 		print("loading pretrained model:",pretrained)
-		load_model(ae,pretrained)
+		load_model(net,pretrained)
 
-	print("model config:",ae.config_string())
+	print("model config:",net.config_string())
 	
-	ae.to(device)
+	net.to(device)
 
-	for i,c in enumerate(ae.encoder_conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
+#	for i,c in enumerate(ae.encoder_conv): print("layer[%d] is cuda?"%i,c.weight.is_cuda)
 	#optimizer = torch.optim.SGD(ae.parameters(), lr=0.01)
 
-	optimizer = [torch.optim.Adadelta(ae.parameters(), lr=learning_rate,weight_decay=1e-8),
-		torch.optim.Adadelta(ae.parameters(), lr=learning_rate*0.25,weight_decay=1e-8)]
+	optimizer = [torch.optim.Adadelta(net.parameters(), lr=learning_rate,weight_decay=1e-8),
+		torch.optim.Adadelta(net.parameters(), lr=learning_rate*0.25,weight_decay=1e-8)]
 
 	print("Start training LR:", learning_rate,"\tsaving to:\t"+outputdir)
 
@@ -1013,14 +993,13 @@ def main(argv):
 	
 	for i in range(0,50000):
 		print("training epoch: ",i)
-		train_epoch(device, ae,optimizer[0],  dataloader,progress)
+		train_epoch(device, net,optimizer[0],  dataloader,progress)
 		
-		if (i+1) % 100==0: ae.increase_depth()
 		if i%save_freq == 0:
-			torch.save(ae.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%8))
+			torch.save(net.state_dict(), outputdir+"my_trained_ae_"+str((i/save_freq)%8))
 
 	print("training on some images.")
-	torch.save(ae.state_dict(), "my_trained_ae")
+	torch.save(net.state_dict(), "my_trained_ae")
 
 if __name__ == "__main__":
 	main(sys.argv[1:])
