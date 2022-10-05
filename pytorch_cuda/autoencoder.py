@@ -466,10 +466,10 @@ class TransformImageDataset(Dataset):
 				#generic names +ideas for what we'll try to generate to train on..
 				["_INPUT0","_INPUT1","_INPUT2","_INPUT3","_INPUT",
 				"_IN_NORMAL","_IN_VEL","_IN_PBR","_IN_AO","_IN_DEPTH","_IN_SHADOW", 
-				"_IN_LIGHT","_IN_LIGHT_DX","_IN_LIGHT_DY","_IN_LIGHT_DZ"],
+				"_IN_LIGHT_DX","_IN_LIGHT_DY","_IN_LIGHT_DZ","_IN_LIGHT"],
 				["_OUTPUT0","_OUTPUT1","_OUTPUT2","_OUTPUT3","_OUTPUT",
 				"_OUT_DEPTH","_OUT_VEL","_OUT_NORMAL","_OUT_PBR","_OUT_AO","_OUT_SHADOW", 
-				"_OUT_LIGHT","_OUT_LIGHT_DX","_OUT_LIGHT_DY","_OUT_LIGHT_DZ"]),scale_to=255):
+				"_OUT_LIGHT_DX","_OUT_LIGHT_DY","_OUT_LIGHT_DZ","_OUT_LIGHT"]),scale_to=255):
 		print("init dataset from dir: ",dirname)
 		self.image_io_pairs=[]
 		#self.init_simple()
