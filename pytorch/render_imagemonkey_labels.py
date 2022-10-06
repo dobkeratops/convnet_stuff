@@ -14,7 +14,8 @@ def main():
     
     annotated_images=render_labels_from_dir(sys.argv[1],16384,False,None)
     #["left/man","right/man","left/woman","right/woman"])
-    result=make_grid(annotated_images,4096)
+    print("compositing thumbnails:")
+    result=make_thumbnail_grid(annotated_images,8192)
     result.show()
 
 def render_labels_from_dir(dir,max=16384,show=False,filter_labels=None):
@@ -107,7 +108,7 @@ def render_annotations_for_image(image,annotations,alpha=255,unlabelled=(128,128
     composite=Image.alpha_composite(composite,overlay)
     return composite
 
-def make_grid(images,width,min_image_width=64):
+def make_thumbnail_grid(images,width,min_image_width=128):
     imgsize=min_image_width
     while (len(images)*imgsize*imgsize*4 < width*width):
         imgsize*=2
@@ -117,6 +118,7 @@ def make_grid(images,width,min_image_width=64):
     
     grid=Image.new("RGB",(width,rows*imgsize))
 
+    
     for i,img in enumerate(images):
         ix=i% per_row
         iy=i//per_row
