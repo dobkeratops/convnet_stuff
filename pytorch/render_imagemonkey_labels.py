@@ -13,7 +13,9 @@ def main():
     if len(sys.argv)==1:
         print("specify directory of images to read")
         return
-    
+    autoopen=False
+    for a in sys.argv: 
+        if a=="-a": autoopen=True
     annotated_images=render_labels_from_dir(sys.argv[1],4096,None,False)
     #["left/man","right/man","left/woman","right/woman"])
     print("compositing thumbnails:")
@@ -21,7 +23,10 @@ def main():
     page=sys.argv[1]+"/html"
     result=make_thumbnail_grid(annotated_images,2048,pagename = page)
     print("at:",page+"/index.html")
-    webbrowser.open(page+"/index.html")
+    
+    if autoopen:
+        webbrowser.open("file:///"+os.getcwd()+"/"+page+"/index.html")
+    else: print("created html view at "+page+"\nuse -a to automatically open when generating this")
 
 def render_labels_from_dir(dir,max=65536,filter_labels=None,show=False,):
     if dir[-1]!="/":dir+="/"
