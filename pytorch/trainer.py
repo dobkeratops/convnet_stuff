@@ -168,19 +168,19 @@ class Encoder(nn.Module):
 		return level_val
 
 class Decoder(nn.Module):
-	def __init__(self,channels=[3,16,32,64,128],kernelSize=5,dropout=0.25,downsample_kernel_size=3,skip_connections=True):
+	def __init__(self,channels=[3,16,32,64,128],kernelSize=5,dropout=0.25,upsample_kernel_size=2,skip_connections=True):
 		super().__init__()
 		self.skip_connections=skip_connections
 		self.channels=channels
 		self.kernel_size=kernelSize
 		self.dropout=dropout
-		self.downsample_kernel_size=downsample_kernel_size
+		self.upsample_kernel_size=upsample_kernel_size
 		self.levels = len(channels)-1
 
 		self.maxpool = nn.MaxPool2d(2,2,0)
 		self.activ = nn.ReLU()
 		self.upsample = nn.ModuleList(
-			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=2,stride=2, padding=0,dilation=2, device=g_device)
+			[nn.ConvTranspose2d(channels[i+1],channels[i+1], kernel_size=upsample_kernel_size,stride=2, padding=0,dilation=2, device=g_device)
 				for i in range(0,self.levels)])
 
 		self.conv = nn.ModuleList([nn.Conv2d(channels[i+1],channels[i], kernel_size=kernelSize, stride=1,padding='same', device=g_device)
