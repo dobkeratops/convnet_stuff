@@ -37,6 +37,9 @@ def render_labels_from_dir(dir,max=65536,filter_labels=None,show=False,):
         image  = Image.open(dir+filename)
         if i%32 ==0:  print("render [%d/%d] %s" % (i,num,filename))
 
+        if not (image.mode == 'RGB' or image.mode =='RGBA'):
+            print("warning only RGB,RGBA supported mode=%s",image.mode)
+            continue
         labelled_polys=parse_annotations(annotations)
         if len(labelled_polys)==0: continue
         rendered=render_annotations_for_image(image,labelled_polys,96,224,outline_thickness=6,filter_labels=filter_labels)
