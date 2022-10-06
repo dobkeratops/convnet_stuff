@@ -5,9 +5,9 @@ import sys
 import math
 import secrets
 
-DOWNLOAD_DIRECTORY = "imagemonkey_data" #/tmp/images
+DOWNLOAD_DIRECTORY = "person_images" #/tmp/images
 BASEURL = 'https://api.imagemonkey.io/' #'http://127.0.0.1:8081/'
-SEARCH_QUERY = "road"
+SEARCH_QUERY = "left/man|right/man|left/woman|right/woman"
 
 if not hasattr(secrets, 'X_API_TOKEN') or secrets.X_API_TOKEN == "":
 	print("Please provide a valid API Token in secrets.py")
