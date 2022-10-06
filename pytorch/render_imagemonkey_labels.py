@@ -6,6 +6,7 @@ import colorsys
 import math
 import json
 import random as rnd
+import webbrowser
 
 def main():
     print(sys.argv)
@@ -16,8 +17,11 @@ def main():
     annotated_images=render_labels_from_dir(sys.argv[1],4096,None,False)
     #["left/man","right/man","left/woman","right/woman"])
     print("compositing thumbnails:")
-    result=make_thumbnail_grid(annotated_images,2048)
-    result.show()
+    
+    page=sys.argv[1]+"/html"
+    result=make_thumbnail_grid(annotated_images,2048,pagename = page)
+    print("at:",page+"/index.html")
+    webbrowser.open(page+"/index.html")
 
 def render_labels_from_dir(dir,max=65536,filter_labels=None,show=False,):
     if dir[-1]!="/":dir+="/"
@@ -28,6 +32,7 @@ def render_labels_from_dir(dir,max=65536,filter_labels=None,show=False,):
         if i>max: break
         ext=filename[filename.rfind("."):].upper()
         basename=filename[:filename.rfind(".")]
+        if basename == "thumbnails": continue
         if not ext in [".JPG","JPEG","PNG"]: continue
         
         file =open(dir+basename+".json",)
@@ -45,7 +50,7 @@ def render_labels_from_dir(dir,max=65536,filter_labels=None,show=False,):
         rendered=render_annotations_for_image(image,labelled_polys,96,224,outline_thickness=6,filter_labels=filter_labels)
         if show: rendered.show()
         
-        imgls.append(rendered)
+        imgls.append((basename,rendered))
     return imgls
 
 def parse_annotations(annotations):
@@ -155,7 +160,7 @@ def render_annotations_for_image(image,annotations,fill_alpha=96,outline_alpha=2
     del dr
     return composite 
 
-def make_thumbnail_grid(images,width,min_image_width=128):
+def make_thumbnail_grid(images,width,min_image_width=128,pagename=None):
     imgsize=min_image_width
     if len(images)>0:
         while (len(images)*imgsize*imgsize*4 < width*width):
@@ -165,13 +170,45 @@ def make_thumbnail_grid(images,width,min_image_width=128):
     rows = (len(images)+per_row-1)//per_row
     
     grid=Image.new("RGBA",(width,rows*imgsize))
+
+    thumbnails=[]
     
-    for i,img in enumerate(images):
+    for i,idimg in enumerate(images):
         ix=i% per_row
         iy=i//per_row
+        id,img=idimg
         thumbnail = img.resize((imgsize,imgsize))
+        thumbnails.append((id,thumbnail))
+
         grid.paste(thumbnail,(ix*imgsize, iy*imgsize))
-    
+
+    if pagename[-1]!="/": pagename+="/"
+
+    if pagename:
+        if not os.path.exists(pagename): os.mkdir(pagename)
+        file  =open(pagename+"index.html","w");
+        file.write("<html><head></head><body>")
+        file.write("<table>\n")
+        for row in range(0,len(thumbnails)// per_row):
+            file.write("\t<tr>\n")
+            for i in range(row*per_row,(row+1)*per_row):
+                if i>len(thumbnails): break
+                id,thumbnail=thumbnails[i]
+                thumbname="thumbnail"+str(i)+".png";
+                file.write("\t\t<td><a href='https://imagemonkey.io/annotate?mode=browse&view=unified&v=2&image_id=%s'><img src='%s'/></a><td>\n"
+                % 
+                    (
+                    id,thumbname
+                    )
+                )
+                thumbnail.save(pagename+thumbname)
+
+            file.write("\t</tr>\n")
+
+        file.write("</table>\n")
+        file.write("</body></html>")
+
+        
 
     return grid
 
