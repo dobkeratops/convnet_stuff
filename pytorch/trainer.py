@@ -200,25 +200,43 @@ class Decoder(nn.Module):
 
 		return x
 
+def count_params(net):
+	num=0
+	for p in list(net.parameters()):
+		nn=1
+		for s in list(p.size()):
+			nn = nn*s
+		num += nn
+	return num
+
+class UnetLatentTransform:
+	def forward(self,level_vals):
+
+		output_level_vals=[]
+		for i in range(self.levels):
+			output_level_vals.append(self.conv[i](level_vals[i]))
+
+		return output_level_vals
+
+	def __init__(self,encoder,decoder,kernel_size=1,inner_kernel_size=3):
+		super().__init__()
+		assert encoder.levels == decoder.levels
+		self.levels=encoder.levels
+		self.conv = nn.ModuleList(
+			[	
+				nn.Conv2d(encoder.channels[i+1],decoder.channels[i+1], kernel_size=kernel_size if i!=self.levels-1 else inner_kernel_size, stride=1, padding='same', device=g_device)
+				for i in range(0,self.levels)
+			]
+		)
+
+
 class EncoderDecoder(nn.Module):
 	def forward(self,input):
 		self.iter+=1
-		debug("eval unet ",input.shape)
-		debug("eval unet on input:where?",input.is_cuda)
 
-		level_vals=self.encoder.forward(input)
-
-		debug("latent", level_vals[len(level_vals)-1].shape)
-		# TODO - call this an adapter module
-		# define adapters between different encodings/decodings
-		# for task branches
-		# translate the latent space,
-		# which is an array holding all the skip connections,
-		# final value is the innermost latent tensor
-		for i in range(self.levels-1):
-			level_vals[i] = self.skip_combine[i](level_vals[i])
-
-		x=self.decoder.forward(level_vals)
+		latent_vals=self.encoder.forward(input)
+		transformed_latent_vals= self.main_task.forward(latent_vals)
+		x=self.decoder.forward(transformed_latent_vals)
 
 		return [('final',x)]
 		
@@ -228,7 +246,7 @@ class EncoderDecoder(nn.Module):
 		quotient=1
 		params=0
 		ksize=self.kernelsize
-		encoder_ch,decoder_ch = self.channels
+		encoder_ch,decoder_ch = self.encoder.channels,self.decoder.channels
 		dsksize=self.downsample_kernel_size
 		
 		for i in range(0,len(encoder_ch)-1):
@@ -248,12 +266,12 @@ class EncoderDecoder(nn.Module):
 			params+=x
 			total+=x/quotient
 			quotient*=2*2
-
-		return {'flops_per_output_pixel':total,'params':params}
+	
+		return {'flops_per_output_pixel':total,'params':params,'reported_params':count_params(self)}
 		
 
 	def config_string(self):
-		return	" channels="+str(self.channels)\
+		return	" channels=("+str(self.encoder.channels)+","+str(self.decoder.channels)+")"\
 			+" ks="+str(self.kernelsize)+"x"+str(self.kernelsize)\
 			+" use="+str(self.uselevel)+"/"+str(self.levels)\
 			+" skipcon="+str(self.skip_connections)\
@@ -262,12 +280,12 @@ class EncoderDecoder(nn.Module):
 
 	def __init__(self,encoder_ch=[3,16,32,64,128],decoder_ch=[128,64,32,16,3],kernelSize= 5,skip_connections=False,dropout=0.25,downsample_kernel_size=3):
 		super().__init__()
+		#todo - this config stuff into a shared object?
+		#we copy a lot of this into the encoder/decoder parts.
 		self.shown=None
 		self.iter=0
 		self.nextshow=1
-		self.channels=(encoder_ch,decoder_ch)	# channels per layer
 		self.dropout=dropout
-		self.generate=False
 		self.downsample_kernel_size=downsample_kernel_size
 		
 		self.kernelsize=kernelSize
@@ -288,25 +306,17 @@ class EncoderDecoder(nn.Module):
 
 		#pytorch needs 'ModuleList' to find layers in arrays
 		#self.downskip=nn.ModuleList([])
-		cost=self.estimate_cost() 
 		
-		print("make encoder ")
+		print("make encoder ",encoder_ch)
 		self.encoder = Encoder(encoder_ch,kernelSize,dropout,downsample_kernel_size)
-		print("make decoder ")
+		print("make decoder ",decoder_ch)
 		self.decoder = Decoder(decoder_ch,kernelSize,dropout)
 
-		print(encoder_ch,decoder_ch)
-
-		if self.skip_connections:
-			self.skip_combine = nn.ModuleList(
-				[	
-					nn.Conv2d(encoder_ch[i+1],decoder_ch[i+1], kernel_size=1, stride=1, padding='same', device=g_device)
-					for i in range(0,self.levels)
-				]
-			)
-		else:
-			self.skip_combine=None
+		print("make latent space transform (main task)")
+		self.main_task = UnetLatentTransform(self.encoder,self.decoder, kernel_size=1)
 		
+		cost=self.estimate_cost() 
+		print("est cost=",cost)
 		print("create EncoderDecoder done")
 
 def dump_state_dict(net):
@@ -890,12 +900,12 @@ def main(argv):
 	learning_rate = 0.1
 	noise_amplitude=0.33
 	_dropout=0.25
-	_latent_depth=0
+	_latent_depth=256
 	_input_features=16
 	_kernel_size=5
-	_downsample_kernel_size=0
-	_skip_connections=False
-	layers=5
+	_downsample_kernel_size=3
+	_skip_connections=True
+	layers=4
 
 	if len(sys.argv)==2:
 		inputdir = sys.argv[1]
