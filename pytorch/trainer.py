@@ -898,7 +898,7 @@ def make_layer_channel_list(io_channels,_input_features,_latent_depth,layers):
 
 	return (encoder_ch,decoder_ch)
 
-
+#####################################################################
 
 def main(argv):
 
