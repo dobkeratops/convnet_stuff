@@ -637,7 +637,7 @@ def make_dataloader(dirname="../training_images/",show=False,max=1000000000,nois
 
 	return DataLoader(
 		dataset,
-		batch_size=min(16,len(dataset)/2), 
+		batch_size=min(16,(len(dataset)+1)//2), 
 		shuffle=True)
 
 def paste_images_vertical(src_imgs):
