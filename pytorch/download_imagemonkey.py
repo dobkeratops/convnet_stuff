@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import math
-import secrets
+import secrets_noclash_torch as secrets
 
 DOWNLOAD_DIRECTORY = "person_images" #/tmp/images
 BASEURL = 'https://api.imagemonkey.io/' #'http://127.0.0.1:8081/'

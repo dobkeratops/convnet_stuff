@@ -1,7 +1,6 @@
-import random
-
-from lib2to3.pgen2.tokenize import generate_tokens
 import torch
+import random
+from lib2to3.pgen2.tokenize import generate_tokens
 import numpy
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -421,10 +420,14 @@ def load_image_as_tensor(i, dirname,fname,size):
 			return None
 	
 	img=Image.open(_fname)
+	
 	img=img.resize((size,size))
+
 	imgarr=numpy.array(img)
 	#imgarr=imgarr[0:255,0:255,0:3]
-	imgarr=torch.tensor(imgarr.transpose((2,0,1)),device=g_device).float()*(1.0/255.0) # numpy HWC -> torch CHW
+	imgarr_tp=imgarr.transpose((2,0,1))
+	imgarr=torch.tensor(imgarr_tp).float()*(1.0/255.0) # numpy HWC -> torch CHW
+	imgarr = imgarr.to(g_device)
 
 	if i%32==0:
 		print("img[",i,"] ",fname," size=",imgarr.shape,"device:",imgarr.device)
@@ -634,7 +637,7 @@ def make_dataloader(dirname="../training_images/",show=False,max=1000000000,nois
 
 	return DataLoader(
 		dataset,
-		batch_size=min(4,len(dataset)), 
+		batch_size=min(16,len(dataset)/2), 
 		shuffle=True)
 
 def paste_images_vertical(src_imgs):
@@ -896,7 +899,7 @@ def make_layer_channel_list(io_channels,_input_features,_latent_depth,layers):
 
 def main(argv):
 
-	inputdir,outputdir,pretrained= "../training_images/","current_model/",None
+	inputdir,outputdir,pretrained= "my_image_dir/","current_model/",None
 	learning_rate = 0.1
 	noise_amplitude=0.33
 	_dropout=0.25
@@ -960,7 +963,7 @@ def main(argv):
 		os.makedirs(outputdir)
 
 
-	no_mps=True
+	no_mps= not "mps" in dir(torch.backends)
 	if torch.cuda.is_available(): device=torch.device("cuda")
 	elif not no_mps and torch.backends.mps.is_available(): device = torch.device("mps")
 	else: device = torch.device("cpu")
