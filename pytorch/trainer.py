@@ -575,7 +575,7 @@ class TransformImageDataset(Dataset):
 
 			input = torch.cat(inputs,0)
 			output= torch.cat(outputs,0)
-			print(basename,"\t:io shapes=", input.shape,output.shape)
+			print(f,"\t:io shapes=", input.shape,output.shape)
 			#to_pil_image(output).show()
 			
 			self.image_io_pairs.append((input,output))
@@ -1007,7 +1007,7 @@ def main(argv):
 	save_freq=40 #todo save frequency based on time, once every 10 seconds raeehr than iterations..
 	progress=Progress(outputdir)
 	
-	for i in range(0,50000):
+	for i in range(0,100000):
 		print("training epoch: ",i)
 		train_epoch(device, net,optimizer[0],  dataloader,progress)
 		

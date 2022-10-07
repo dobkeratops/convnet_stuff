@@ -8,7 +8,7 @@ import secrets_noclash_torch as secrets
 DOWNLOAD_DIRECTORY = "person_images" #/tmp/images
 BASEURL = 'https://api.imagemonkey.io/' #'http://127.0.0.1:8081/'
 #SEARCH_QUERY = "left/man|right/man|left/woman|right/woman"
-SEARCH_QUERY = "man|woman|man/sitting|man/walking|man/standing|man/running|woman/sitting|woman/walking|woman/reclining"
+SEARCH_QUERY = "left/man|right/man|left/woman|right/woman"
 
 if not hasattr(secrets, 'X_API_TOKEN') or secrets.X_API_TOKEN == "":
 	print("Please provide a valid API Token in secrets.py")
