@@ -192,7 +192,10 @@ class Decoder(nn.Module):
 		for i in reversed(range(0,self.levels)):
 			if i!=self.levels-1:
 				if self.skip_connections:
-					x=self.activ(x+level_val[i])
+					skip=self.activ(level_val[i])
+					if self.dropout>0.01: skip=nn.Dropout(self.dropout)(skip)
+					x=x+level_val[i]
+					
 			x=self.upsample[i](x)
 			if self.dropout>0.01: x=nn.Dropout(self.dropout)(x)
 			x=self.activ(self.conv[i](x))
@@ -907,7 +910,7 @@ def main(argv):
 	_input_features=16
 	_kernel_size=5
 	_downsample_kernel_size=3
-	_skip_connections=True
+	_skip_connections=False
 	layers=4
 
 	if len(sys.argv)==2:
