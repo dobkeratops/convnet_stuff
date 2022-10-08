@@ -8,13 +8,31 @@ import json
 import random as rnd
 import webbrowser
 
+from torch import QInt32Storage
+
 def main():
-    print(sys.argv)
-    if len(sys.argv)==1:
-        print("specify directory of images to read")
-        return
+    print(sys.argv,os.getcwd())
+    imagedir=None
     autoopen=False
     for_training=False
+
+    if len(sys.argv)==1:
+        print("specify directory of images to read\n-a to automatically open generated page\n\t(<imagedir>/html)\n-t to generate images for training\n\t(in <imagedir>/training)\n-debug for dev")
+            
+    elif sys.argv[1]=="-debug":
+        print("debugging")
+        if os.path.exists("debug_imagedir"):
+            print("debugging found: debug_imagesdir")
+            imagedir="debug_imagedir"
+            autoopen=True
+    else:
+        imagedir=sys.argv[1]
+
+
+    if not imagedir:
+        return
+
+
     for a in sys.argv: 
         if a=="-a": autoopen=True
         if a=="-t": for_training=True
@@ -26,20 +44,19 @@ def main():
         print("no label set specified, using all labels [optionally supply label list in cmdline]")
     else: print("using label set:\n",label_set)
 
-
-    annotated_images=render_labels_from_dir(sys.argv[1],2048,label_set,for_training)
+    annotated_images=render_labels_from_dir(imagedir,2048,label_set,for_training)
     #["left/man","right/man","left/woman","right/woman"])
     print("compositing thumbnails: %d" % len(annotated_images))
     
     if len(annotated_images)>0:
-        page=sys.argv[1]+"/html"
-        result=make_thumbnail_grid(annotated_images,2048,pagename = page)
+        page=imagedir+"/html"
+        result=make_thumbnail_grid(annotated_images,1680,pagename = page)
         print("at:",page+"/index.html")
     
         if autoopen:
             webbrowser.open("file:///"+os.getcwd()+"/"+page+"/index.html")
         else: print("created html view at "+page+"\nuse -a to automatically open when generating this")
-
+    if for_training: print("generated training data at %s/training")
     return
 
 def render_labels_from_dir(dir,max=65536,label_set=None,for_training=False):
@@ -47,7 +64,7 @@ def render_labels_from_dir(dir,max=65536,label_set=None,for_training=False):
     num_files=len(os.listdir(dir))
     imgls=[]
     num=len(os.listdir(dir))
-    for_training=True
+    
     training_image_size=(255,255)
     outindex=0
     training_dir=dir+"training/"
@@ -59,8 +76,11 @@ def render_labels_from_dir(dir,max=65536,label_set=None,for_training=False):
         if basename == "thumbnails": continue
         if not ext in [".JPG","JPEG","PNG"]: continue
         
-        file =open(dir+basename+".json",)
-        if not file: continue
+        jsonname=dir+basename+".json"
+        if not os.path.exists(jsonname):
+            print("warning %s has no corresponding json\n")
+            continue
+        file =open(jsonname)
         annotations=json.load(file) 
         file.close()
 
@@ -86,7 +106,7 @@ def render_labels_from_dir(dir,max=65536,label_set=None,for_training=False):
         
         original_size=image.size
         if for_training:
-            rendered=render_annotations_for_image((image,original_size),labelled_polys,255,0,unlabelled=(0,0,0,255),outline_thickness=0)
+            rendered=render_annotations_for_image((image,original_size),labelled_polys,255,0,unlabelled_color=(0,0,0,255),outline_thickness=0)
             image.resize(training_image_size)
             if image.mode=="RGB":
                 image.save(training_dir+"image"+str(outindex)+"_INPUT.JPG")
@@ -96,7 +116,7 @@ def render_labels_from_dir(dir,max=65536,label_set=None,for_training=False):
             del rendered
 
         else:
-            rendered=render_annotations_for_image((image,original_size),labelled_polys,96,224,outline_thickness=6)
+            rendered=render_annotations_for_image((image,original_size),labelled_polys,96,192,outline_thickness=6)
             image.resize((128,128))
             imgls.append((basename,rendered))
         outindex+=1
@@ -145,10 +165,25 @@ def color_of_label(label):
 
     # a few hardcoded , todo : specify coloration 
     
-    if "left" in label: r,g,b=255,128,128
-    elif "right" in label: r,g,b  = 128,255,128
+    # gender neutral left,right
+    if "left" in label: r,g,b=255,128,0
+    elif "right" in label: r,g,b  = 0,128,255
     if "road" in label: r,g,b=255,0,255
     elif "pavement" in label: r,g,b  = 0,255,0
+
+    # left - right = (1.0,0,-1.0)
+    # man - woman = (-1.0,1.0,-1.0)
+    # orthogonal basis
+    # e.g man+woman = 
+    if "man" in label:
+        if "left" in label: r,g,b = 255,255,0
+        elif "right" in label: r,g,b = 0,255,255
+        else: r,g,b=0,255,0
+    if "woman" in label:
+        if "left" in label: r,g,b = 255,0,0
+        elif "right" in label: r,g,b = 0,0,255
+        else: r,g,b = 255,0,255
+    
     return r,g,b
 
 g_label_layer={}
@@ -166,50 +201,58 @@ def get_label_layer(label):
     g_label_layer[label]=layer
     return layer
 
-def render_annotations_for_image(image_osize,annotations,fill_alpha=96,outline_alpha=224,unlabelled=(128,128,128,64),outline_thickness=1):
+def color_maximize_value(r,g,b):
+    if r==0 and g==0 and b==0:
+        return 0,0,0    # keep black as black
+    denom = max(r,max(g,b))
+    return (255*r)//denom,(255*g)//denom, (255*b)//denom
+
+def render_annotations_for_image(image_osize,annotations,fill_alpha=96,outline_alpha=128,unlabelled_color=(128,128,128,64),outline_thickness=1):
     image,original_size=image_osize
 
-    overlay=Image.new(image.mode,image.size,unlabelled)
+    overlay=Image.new(image.mode,image.size,unlabelled_color)
 
     dr=ImageDraw.Draw(overlay, 'RGBA')
-    if unlabelled[3]>0:
-        dr.rectangle( [0,0,image.width,image.height], unlabelled)
+    if unlabelled_color[3]>0:
+        dr.rectangle( [0,0,image.width,image.height], unlabelled_color)
 
-    sorted_polys=[[],[]]
+    polys_per_layer=[[],[]]
 
     
     for label in annotations:
-        sorted_polys[get_label_layer(label)].append( (label,annotations[label]) )
+        polys_per_layer[get_label_layer(label)].append( (label,annotations[label]) )
 
     def foreach_poly(dr,f):
-        for poly_layer in sorted_polys:
-            for label,polys in poly_layer:
+        for polys_in_layer in polys_per_layer:
+            for label,polys in polys_in_layer:
                 for poly in polys:
                     if len(poly)<3: continue
                     f(dr,label,poly)
 
-    def poly_fill(dr,label,poly):
+    def fill_poly(dr,label,poly):
         r,g,b=color_of_label(label)
         dr.polygon(poly, (r,g,b,fill_alpha))
 
-    def poly_outline(dr,label,poly):
+    def draw_poly_outline(dr,label,poly):
         r,g,b=color_of_label(label)
-        r=(r+255)//2; g=(g+255)//2; b=(b+255)//2
+        r,g,b=color_maximize_value(r,g,b)
+        
         dr.line(poly, (r,g,b,outline_alpha),width=outline_thickness ,joint=True)
 
 
     if fill_alpha>0:
-        foreach_poly(dr,poly_fill)
+        foreach_poly(dr,fill_poly)
 
-    composite=Image.blend(image,overlay,unlabelled[3]*(1.0/255.0))
+    composite=Image.blend(image,overlay,unlabelled_color[3]*(1.0/255.0))
 
     del dr
     dr=ImageDraw.Draw(composite, 'RGBA')
 
     if outline_alpha>0 and outline_thickness>0:
-        foreach_poly(dr, poly_outline)
+        foreach_poly(dr, draw_poly_outline)
 
     del dr
+    composite=composite.convert('RGB')
     return composite 
 
 def make_thumbnail_grid(images,width,min_image_width=128,pagename=None):
@@ -254,12 +297,9 @@ def make_thumbnail_grid(images,width,min_image_width=128,pagename=None):
             for i in range(row*per_row,(row+1)*per_row):
                 if i>len(thumbnails): break
                 id,thumbnail=thumbnails[i]
-                thumbname="thumbnail"+str(i)+".png";
+                thumbname="thumbnail"+str(i)+ ".jpg" if thumbnail.mode == "RGB" else ".png"
                 file.write("\t\t<td><a href='https://imagemonkey.io/annotate?mode=browse&view=unified&v=2&image_id=%s'><img src='%s'/></a><td>\n"
-                % 
-                    (
-                    id,thumbname
-                    )
+                    %(id,thumbname)
                 )
                 thumbnail.save(pagename+thumbname)
 

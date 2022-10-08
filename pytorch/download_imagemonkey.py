@@ -5,10 +5,11 @@ import sys
 import math
 import secrets_noclash_torch as secrets
 
-DOWNLOAD_DIRECTORY = "person_images" #/tmp/images
 BASEURL = 'https://api.imagemonkey.io/' #'http://127.0.0.1:8081/'
+DOWNLOAD_DIRECTORY = "road_pavement_building_car" #/tmp/images
+SEARCH_QUERY = "road|pavement|building|car|truck|van|bus|bicycle|motorbike|person|man|woman"
+#DOWNLOAD_DIRECTORY = "left_right_man_woman" #/tmp/images
 #SEARCH_QUERY = "left/man|right/man|left/woman|right/woman"
-SEARCH_QUERY = "left/man|right/man|left/woman|right/woman"
 
 if not hasattr(secrets, 'X_API_TOKEN') or secrets.X_API_TOKEN == "":
 	print("Please provide a valid API Token in secrets.py")
